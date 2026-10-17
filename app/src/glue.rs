@@ -20,6 +20,10 @@ use crate::xembed_tray::{self, TrayCommand};
 
 slint::include_modules!();
 
+thread_local! {
+    static TRAY_POPUP: Cell<bool> = const { Cell::new(false) };
+}
+
 enum Nav {
     New,
     Select(String),
@@ -78,10 +82,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
         previous(info);
     }));
 
-    slint::BackendSelector::new()
-        .backend_name("winit".into())
-        .select()
-        .map_err(|error| format!("无法初始化窗口：{error}"))?;
+    select_backend()?;
 
     let store = Arc::new(Mutex::new(Store::open(data_dir.join("reminders.json"))));
     let ui = MainWindow::new().map_err(|error| format!("无法创建主窗口：{error}"))?;
@@ -176,7 +177,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
         for command in commands {
             match command {
                 TrayCommand::Show => timed.show_main(),
-                TrayCommand::Menu { x, y } => timed.open_tray_menu(x, y),
+                TrayCommand::Menu(anchor) => timed.open_tray_menu(anchor),
             }
         }
     });
@@ -1002,15 +1003,19 @@ impl Session {
         }
     }
 
-    fn open_tray_menu(&self, x: i32, y: i32) {
+    fn open_tray_menu(&self, anchor: xembed_tray::TrayMenuAnchor) {
+        self.close_tray_menu();
+        TRAY_POPUP.with(|flag| flag.set(true));
         let menu = match TrayMenu::new() {
             Ok(menu) => menu,
             Err(error) => {
+                TRAY_POPUP.with(|flag| flag.set(false));
                 self.log.log("ERROR", &format!("无法打开托盘菜单：{error}"));
                 self.show_main();
                 return;
             }
         };
+        TRAY_POPUP.with(|flag| flag.set(false));
         menu.set_ui_font(ui_font().into());
         let session = self.ui.clone();
         menu.on_show_main(move || {
@@ -1028,10 +1033,26 @@ impl Session {
                 let _ = menu.hide();
             }
         });
+        let scale = self
+            .ui
+            .upgrade()
+            .map(|ui| ui.window().scale_factor())
+            .unwrap_or(1.0)
+            .max(1.0);
+        let menu_w = (196.0 * scale).round() as i32;
+        let menu_h = (84.0 * scale).round() as i32;
+        let (x, y) = xembed_tray::tray_menu_origin(&anchor, menu_w, menu_h);
+        let position = slint::PhysicalPosition::new(x, y);
+        menu.window().set_position(position);
         if menu.show().is_err() {
             return;
         }
-        place_tray_menu(menu.window(), x, y);
+        let placed = menu.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(0), move || {
+            if let Some(menu) = placed.upgrade() {
+                menu.window().set_position(position);
+            }
+        });
         *self.menu.borrow_mut() = Some(menu);
     }
 
@@ -1298,11 +1319,32 @@ fn place_main(window: &slint::Window) {
     place_window(window, 0, 1100, 740, false);
 }
 
-fn place_tray_menu(window: &slint::Window, x: i32, y: i32) {
-    let _ = with_winit(window, |winit_window| {
-        winit_window.set_window_level(winit::window::WindowLevel::AlwaysOnTop);
-        let menu_h = 96;
-        let menu_y = if y > menu_h + 12 { y - menu_h - 6 } else { y + 8 };
-        winit_window.set_outer_position(winit::dpi::PhysicalPosition::new(x, menu_y));
-    });
+fn select_backend() -> Result<(), String> {
+    let backend = i_slint_backend_winit::Backend::builder()
+        .with_renderer_name("renderer-software")
+        .with_window_attributes_hook(tray_popup_attributes)
+        .build()
+        .map_err(|error| format!("无法初始化窗口：{error}"))?;
+    slint::platform::set_platform(Box::new(backend)).map_err(|error| format!("无法初始化窗口：{error}"))
+}
+
+fn tray_popup_attributes(attributes: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
+    if !TRAY_POPUP.with(Cell::get) {
+        return attributes;
+    }
+    TRAY_POPUP.with(|flag| flag.set(false));
+    popup_window(attributes)
+}
+
+fn popup_window(attributes: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use winit::platform::x11::{WindowAttributesExtX11, WindowType};
+        return attributes
+            .with_override_redirect(true)
+            .with_x11_window_type(vec![WindowType::PopupMenu])
+            .with_decorations(false);
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    attributes
 }
