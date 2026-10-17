@@ -1,5 +1,5 @@
-prefix=/usr
-libdir=/opt/workspace/zml/jkit-toolbox/reminder-desktop/packaging/lib
+prefix=${pcfiledir}/..
+libdir=${prefix}/lib
 includedir=/usr/include
 
 Name: fontconfig

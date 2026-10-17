@@ -56,3 +56,15 @@ Windows 发布构建不弹控制台。macOS 的菜单栏图标由 Slint 的状�
 - 程序没开的时候错过的周期，重新打开后合并成一条弹窗，并写明错过了多少次
 
 开发自检：`reminder-desktop --check` 不打开窗口。`--smoke` 打开窗口后马上退出。
+
+## 打包
+
+在项目根目录执行：
+
+```bash
+./packaging/package.sh
+```
+
+脚本会做 release 构建、跑一遍 `--check`，再把单个程序放进 `dist/`。Linux 和 macOS 是 `.tar.gz`，Windows 是 `.zip`。包没有签名，也没有安装向导。
+
+推送 `v*` 标签，或在 GitHub Actions 里手动运行 Package，会打出三个包：Linux x86_64、macOS Apple 芯片（aarch64）、Windows x86_64。标签推送还会把这些包挂到对应的 GitHub Release。
