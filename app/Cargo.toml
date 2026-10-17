@@ -1,0 +1,26 @@
+[package]
+name = "reminder-desktop"
+version = "1.0.0"
+edition = "2021"
+description = "跨平台桌面提醒"
+publish = false
+license = "MIT"
+
+[dependencies]
+reminder-core = { path = "../core" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+fs2 = "0.4"
+i-slint-backend-winit = "=1.18.1"
+rodio = "0.19"
+slint = { version = "=1.18.1", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "backend-winit",
+    "renderer-software",
+    "system-tray",
+] }
+winit = "0.30.13"
+x11rb = "0.13"
+
+[build-dependencies]
+slint-build = "=1.18.1"

@@ -1,0 +1,15 @@
+[package]
+name = "reminder-core"
+version = "1.0.0"
+edition = "2021"
+description = "调度、校验与持久化，不含界面"
+publish = false
+license = "MIT"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+croner = "2"
+rodio = "0.19"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }

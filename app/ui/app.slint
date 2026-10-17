@@ -1,0 +1,1436 @@
+import { ListView, ScrollView } from "std-widgets.slint";
+
+export struct ReminderRow {
+    id: string,
+    title: string,
+    summary: string,
+    when-text: string,
+    badge: string,
+    badge-kind: string,
+    selected: bool,
+    sound-on: bool,
+}
+
+export struct PreviewLine { text: string, }
+export struct DirEntry { label: string, path: string, kind: string, }
+
+global Theme {
+    in-out property <color> canvas: #F2F4F6;
+    in-out property <color> sidebar: #F7F9FA;
+    in-out property <color> card: #FFFFFF;
+    in-out property <color> ink: #16212B;
+    in-out property <color> secondary: #2B3844;
+    in-out property <color> label: #46535F;
+    in-out property <color> muted: #667583;
+    in-out property <color> line: #E1E6EB;
+    in-out property <color> field: #C9D1D9;
+    in-out property <color> button-line: #D5DCE3;
+    in-out property <color> accent: #0B6B63;
+    in-out property <color> accent-deep: #095A54;
+    in-out property <color> accent-soft: #E8F3F1;
+    in-out property <color> accent-ink: #0B5A54;
+    in-out property <color> danger: #B42318;
+    in-out property <color> warn-bg: #FFF7E6;
+    in-out property <color> warn-line: #F1D9A0;
+    in-out property <color> warn-ink: #7A4A00;
+    in-out property <color> ok-bg: #ECFDF3;
+    in-out property <color> ok-ink: #067647;
+}
+
+component CommandButton inherits Rectangle {
+    in property <string> label;
+    in property <string> tip;
+    in property <bool> danger: false;
+    callback clicked();
+    callback tip-hover(string, length, length);
+    min-width: caption.preferred-width + 24px;
+    height: 32px;
+    border-radius: 6px;
+    border-width: 1px;
+    property <bool> hot: area.has-hover;
+    property <bool> down: area.pressed;
+    background: down ? (danger ? #FEE4E2 : #E6EBEF) : hot ? (danger ? #FEF3F2 : #F3F6F8) : white;
+    border-color: danger && root.hot ? #FDA29B : root.hot ? #B3BEC8 : Theme.button-line;
+    caption := Text {
+        width: 100%;
+        height: 100%;
+        text: root.label;
+        font-size: 13px;
+        font-weight: 500;
+        color: danger && root.hot ? Theme.danger : Theme.secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    area := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        changed has-hover => {
+            if (self.has-hover) {
+                root.tip-hover(root.tip, self.absolute-position.x, self.absolute-position.y + self.height + 8px);
+            } else {
+                root.tip-hover("", 0px, 0px);
+            }
+        }
+    }
+}
+
+component PrimaryButton inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    min-width: caption.preferred-width + 36px;
+    height: 36px;
+    border-radius: 6px;
+    property <bool> hot: area.has-hover;
+    property <bool> down: area.pressed;
+    background: down ? #074842 : hot ? Theme.accent-deep : Theme.accent;
+    caption := Text {
+        width: 100%;
+        height: 100%;
+        text: root.label;
+        color: white;
+        font-size: 14px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    area := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component QuietButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger: false;
+    callback clicked();
+    min-width: caption.preferred-width + 28px;
+    height: 36px;
+    border-radius: 6px;
+    border-width: 1px;
+    property <bool> hot: area.has-hover;
+    property <bool> down: area.pressed;
+    background: down ? (danger ? #FEE4E2 : #E6EBEF) : hot ? (danger ? #FEF3F2 : #F3F6F8) : white;
+    border-color: danger ? (hot ? #F97066 : #FDA29B) : (hot ? #B3BEC8 : Theme.field);
+    caption := Text {
+        width: 100%;
+        height: 100%;
+        text: root.label;
+        font-size: 14px;
+        font-weight: 500;
+        color: danger ? Theme.danger : Theme.secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    area := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component Chip inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    min-width: caption.preferred-width + 20px;
+    height: 28px;
+    border-radius: 6px;
+    border-width: 1px;
+    property <bool> hot: area.has-hover;
+    background: hot ? #F1F8F7 : white;
+    border-color: hot ? Theme.accent : Theme.button-line;
+    caption := Text {
+        width: 100%;
+        height: 100%;
+        text: root.label;
+        font-size: 13px;
+        color: hot ? Theme.accent : Theme.secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    area := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component SegButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked();
+    height: 30px;
+    border-radius: 6px;
+    horizontal-stretch: 1;
+    background: active ? white : transparent;
+    border-width: active ? 1px : 0px;
+    border-color: #E1E6EB;
+    Text {
+        width: 100%;
+        height: 100%;
+        text: root.label;
+        font-size: 13px;
+        font-weight: active ? 600 : 500;
+        color: active ? Theme.ink : Theme.label;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component FilterTab inherits Rectangle {
+    in property <string> label;
+    in property <string> count;
+    in property <bool> active;
+    callback clicked();
+    min-width: caption.preferred-width;
+    height: 32px;
+    caption := Text {
+        width: 100%;
+        height: parent.height - 2px;
+        text: root.label + " " + root.count;
+        font-size: 13px;
+        font-weight: active ? 600 : 400;
+        color: active ? Theme.accent : Theme.label;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        y: root.height - 2px;
+        height: 2px;
+        width: parent.width;
+        background: active ? Theme.accent : transparent;
+    }
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder: "";
+    in property <string> font-name: "";
+    in property <bool> align-center: false;
+    in property <length> trail: 0px;
+    callback edited(string);
+    public function take-focus() { input.focus(); }
+    height: 32px;
+    border-radius: 6px;
+    border-width: 1px;
+    background: white;
+    border-color: input.has-focus ? Theme.accent : Theme.field;
+    Rectangle {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: 9px;
+        border-width: 3px;
+        border-color: input.has-focus ? #0B6B632E : transparent;
+    }
+    if root.text == "": Text {
+        x: 12px;
+        y: 0px;
+        width: parent.width - 24px - root.trail;
+        height: 100%;
+        text: root.placeholder;
+        font-size: 14px;
+        font-family: root.font-name;
+        color: #98A2B3;
+        vertical-alignment: center;
+        horizontal-alignment: root.align-center ? center : left;
+    }
+    input := TextInput {
+        x: root.align-center ? 4px : 12px;
+        y: 0px;
+        width: parent.width - (root.align-center ? 8px : 24px) - root.trail;
+        height: 100%;
+        text <=> root.text;
+        single-line: true;
+        font-size: 14px;
+        font-family: root.font-name;
+        color: Theme.ink;
+        vertical-alignment: center;
+        horizontal-alignment: root.align-center ? center : left;
+        edited => { root.edited(self.text); }
+    }
+}
+
+component BodyField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder: "";
+    callback edited(string);
+    height: 104px;
+    border-radius: 6px;
+    border-width: 1px;
+    background: white;
+    border-color: input.has-focus ? Theme.accent : Theme.field;
+    Rectangle {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: 9px;
+        border-width: 3px;
+        border-color: input.has-focus ? #0B6B632E : transparent;
+    }
+    if root.text == "": Text {
+        x: 12px;
+        y: 8px;
+        width: parent.width - 24px;
+        text: root.placeholder;
+        font-size: 14px;
+        color: #98A2B3;
+        wrap: word-wrap;
+    }
+    scroll := ScrollView {
+        x: 4px;
+        y: 4px;
+        width: parent.width - 8px;
+        height: parent.height - 8px;
+        content-width: self.visible-width;
+        content-height: max(self.visible-height, input.preferred-height + 8px);
+        input := TextInput {
+            x: 8px;
+            y: 4px;
+            width: max(parent.visible-width - 16px, 40px);
+            text <=> root.text;
+            single-line: false;
+            wrap: word-wrap;
+            font-size: 14px;
+            color: Theme.ink;
+            vertical-alignment: top;
+            page-height: scroll.visible-height;
+            edited => { root.edited(self.text); }
+        }
+    }
+}
+
+component StepperButton inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: area.has-hover ? #B3BEC8 : Theme.field;
+    background: area.pressed ? #E6EBEF : area.has-hover ? #F3F6F8 : white;
+    Text {
+        width: 100%;
+        height: 100%;
+        text: root.label;
+        font-size: 16px;
+        color: Theme.secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    area := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component FieldError inherits Text {
+    in property <string> message;
+    text: message;
+    font-size: 12px;
+    color: Theme.danger;
+    wrap: word-wrap;
+    visible: message != "";
+    horizontal-alignment: left;
+}
+
+component SnoozeChip inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    horizontal-stretch: 1;
+    min-width: caption.preferred-width + 16px;
+    height: 38px;
+    border-radius: 6px;
+    border-width: 1px;
+    property <bool> hot: area.has-hover;
+    property <bool> down: area.pressed;
+    background: down ? Theme.accent-soft : hot ? #F1F8F7 : white;
+    border-color: hot ? Theme.accent : Theme.field;
+    caption := Text {
+        width: 100%;
+        height: 100%;
+        text: root.label;
+        font-size: 14px;
+        font-weight: 500;
+        color: Theme.secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    area := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "桌面提醒";
+    icon: @image-url("../assets/icon-128.png");
+    min-width: 1080px;
+    min-height: 720px;
+    preferred-width: 1280px;
+    preferred-height: 860px;
+    background: Theme.canvas;
+    default-font-size: 14px;
+    in-out property <string> ui-font: "Noto Sans CJK SC";
+    in-out property <string> mono-font: "DejaVu Sans Mono";
+    default-font-family: ui-font;
+
+    in-out property <string> clock-text: "--:--:--";
+    in-out property <string> zone-text: "UTC+08:00";
+    in-out property <string> count-text: "0";
+    in-out property <string> status-text: "";
+    in-out property <string> footer-text: "共 0 条提醒 · 待触发 0 条";
+    in-out property <string> empty-text: "还没有提醒";
+    in-out property <bool> list-empty: true;
+    in-out property <string> list-filter: "all";
+    in-out property <string> tab-all: "0";
+    in-out property <string> tab-pending: "0";
+    in-out property <string> tab-fired: "0";
+    in-out property <string> tab-paused: "0";
+
+    in-out property <string> editor-heading: "新建提醒";
+    in-out property <string> kind: "delay";
+    in-out property <string> form-title: "";
+    in-out property <string> form-body: "";
+    in-out property <string> title-count: "0 / 80";
+    in-out property <string> body-count: "0 / 4000";
+    in-out property <string> form-minutes: "";
+    in-out property <string> form-date: "";
+    in-out property <string> form-time: "";
+    in-out property <string> form-cron: "";
+    in-out property <bool> form-sound: true;
+    in-out property <string> sound-label: "默认铃声（内置）";
+    in-out property <bool> form-enabled: true;
+
+    in-out property <string> title-error: "";
+    in-out property <string> body-error: "";
+    in-out property <string> delay-error: "";
+    in-out property <string> date-error: "";
+    in-out property <string> time-error: "";
+    in-out property <string> cron-error: "";
+    in-out property <string> sound-error: "";
+    in-out property <string> form-error: "";
+    in-out property <string> delay-hint: "";
+    in-out property <string> at-hint: "";
+    in-out property <string> banner: "";
+    in-out property <string> history-hint: "";
+    in-out property <bool> delete-enabled: false;
+
+    in-out property <string> dialog: "";
+    in-out property <string> dialog-title: "";
+    in-out property <string> dialog-message: "";
+    in-out property <bool> browser-open: false;
+    in-out property <string> browser-path: "";
+    in-out property <string> browser-picked: "";
+    in-out property <string> hover-tip: "";
+    in-out property <length> hover-tip-x: 0px;
+    in-out property <length> hover-tip-y: 0px;
+
+    in-out property <[ReminderRow]> rows: [];
+    in-out property <[PreviewLine]> preview-lines: [];
+    in-out property <[DirEntry]> dir-entries: [];
+
+    callback draft-edited();
+    callback save();
+    callback new-reminder();
+    callback select-reminder(string);
+    callback delete-request();
+    callback dialog-confirm();
+    callback dialog-cancel();
+    callback hide-to-tray();
+    callback quit();
+    callback backup();
+    callback preview-sound();
+    callback browse-open();
+    callback browse-cancel();
+    callback browse-enter(string, string);
+    callback browse-use();
+    callback use-default-sound();
+    callback search-changed(string);
+    callback kind-changed(string);
+    callback preset(string);
+    callback filter-changed(string);
+    callback minutes-step(int);
+    callback minutes-preset(int);
+    callback revert();
+
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        key-pressed(event) => {
+            if (event.modifiers.control && (event.text == "s" || event.text == "S")) {
+                root.save();
+                accept
+            } else if (event.modifiers.control && (event.text == "n" || event.text == "N")) {
+                root.new-reminder();
+                accept
+            } else if (event.modifiers.control && (event.text == "f" || event.text == "F")) {
+                search-box.take-focus();
+                accept
+            } else {
+                reject
+            }
+        }
+
+        VerticalLayout {
+            Rectangle {
+                height: 56px;
+                background: white;
+                HorizontalLayout {
+                    width: 100%;
+                    height: 100%;
+                    padding-left: 20px;
+                    padding-right: 20px;
+                    spacing: 12px;
+                    cross-axis-alignment: center;
+                    Image {
+                        source: @image-url("../assets/icon-128.png");
+                        width: 32px;
+                        height: 32px;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 0px;
+                        Text { text: "桌面提醒"; font-size: 16px; font-weight: 600; color: Theme.ink; }
+                        Text { text: "关闭窗口后仍在后台运行，到点会弹出提醒"; font-size: 12px; color: Theme.muted; }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 0px;
+                        Text {
+                            text: root.clock-text;
+                            font-family: root.mono-font;
+                            font-size: 14px;
+                            font-weight: 500;
+                            color: Theme.ink;
+                            horizontal-alignment: right;
+                        }
+                        Text {
+                            text: root.zone-text;
+                            font-size: 11px;
+                            color: Theme.muted;
+                            horizontal-alignment: right;
+                        }
+                    }
+                    if root.status-text == "已保存": Rectangle {
+                        height: 24px;
+                        border-radius: 12px;
+                        background: Theme.ok-bg;
+                        HorizontalLayout {
+                            width: 100%;
+                            height: 100%;
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 6px;
+                            alignment: center;
+                            cross-axis-alignment: center;
+                            Rectangle { width: 6px; height: 6px; border-radius: 3px; background: #12B76A; }
+                            Text {
+                                text: "已保存";
+                                font-size: 12px;
+                                font-weight: 500;
+                                color: Theme.ok-ink;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    if root.status-text != "" && root.status-text != "已保存": Text {
+                        text: root.status-text;
+                        font-size: 12px;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { width: 1px; height: 24px; background: Theme.line; }
+                    CommandButton {
+                        label: "备份";
+                        tip: "备份：把全部提醒导出为备份文件";
+                        clicked => { root.backup(); }
+                        tip-hover(text, x, y) => { root.hover-tip = text; root.hover-tip-x = x; root.hover-tip-y = y; }
+                    }
+                    CommandButton {
+                        label: "隐藏到托盘";
+                        tip: "隐藏到托盘：关闭窗口但继续在后台提醒";
+                        clicked => { root.hide-to-tray(); }
+                        tip-hover(text, x, y) => { root.hover-tip = text; root.hover-tip-x = x; root.hover-tip-y = y; }
+                    }
+                    CommandButton {
+                        label: "退出";
+                        tip: "退出：完全退出程序，退出后不再提醒";
+                        danger: true;
+                        clicked => { root.quit(); }
+                        tip-hover(text, x, y) => { root.hover-tip = text; root.hover-tip-x = x; root.hover-tip-y = y; }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                vertical-stretch: 1;
+                Rectangle {
+                    width: 320px;
+                    background: Theme.sidebar;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            Text { text: "全部提醒"; font-size: 14px; font-weight: 600; color: Theme.ink; vertical-alignment: center; }
+                            Rectangle { horizontal-stretch: 1; }
+                            Rectangle {
+                                height: 20px;
+                                border-radius: 10px;
+                                background: #E6EBEF;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    alignment: center;
+                                    Text { text: root.count-text; font-size: 12px; font-weight: 500; color: Theme.label; }
+                                }
+                            }
+                        }
+                        PrimaryButton {
+                            label: "新建提醒";
+                            width: 100%;
+                            clicked => { root.new-reminder(); }
+                        }
+                        Rectangle {
+                            height: 32px;
+                            search-box := Field {
+                                width: 100%;
+                                placeholder: "搜索标题或正文";
+                                trail: 58px;
+                                edited(text) => { root.search-changed(text); }
+                            }
+                            Rectangle {
+                                x: parent.width - 54px;
+                                y: 6px;
+                                width: 48px;
+                                height: 20px;
+                                border-radius: 4px;
+                                background: #F2F4F6;
+                                border-width: 1px;
+                                border-color: #DDE3E8;
+                                HorizontalLayout {
+                                    padding-left: 5px;
+                                    padding-right: 5px;
+                                    alignment: center;
+                                    Text { text: "Ctrl+F"; font-family: root.mono-font; font-size: 11px; color: Theme.muted; }
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 0px;
+                            HorizontalLayout {
+                            spacing: 14px;
+                            FilterTab {
+                                label: "全部";
+                                count: root.tab-all;
+                                active: root.list-filter == "all";
+                                clicked => { root.list-filter = "all"; root.filter-changed("all"); }
+                            }
+                            FilterTab {
+                                label: "待触发";
+                                count: root.tab-pending;
+                                active: root.list-filter == "pending";
+                                clicked => { root.list-filter = "pending"; root.filter-changed("pending"); }
+                            }
+                            FilterTab {
+                                label: "已触发";
+                                count: root.tab-fired;
+                                active: root.list-filter == "fired";
+                                clicked => { root.list-filter = "fired"; root.filter-changed("fired"); }
+                            }
+                            FilterTab {
+                                label: "已停用";
+                                count: root.tab-paused;
+                                active: root.list-filter == "paused";
+                                clicked => { root.list-filter = "paused"; root.filter-changed("paused"); }
+                            }
+                        }
+                            Rectangle { height: 1px; background: Theme.line; }
+                        }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            if root.list-empty: Text {
+                                text: root.empty-text;
+                                color: Theme.muted;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                                y: 16px;
+                            }
+                            if !root.list-empty: ListView {
+                                width: 100%;
+                                height: 100%;
+                                for row in root.rows: Rectangle {
+                                    width: 100%;
+                                    height: 86px;
+                                    background: transparent;
+                                    Rectangle {
+                                    y: 0px;
+                                    height: 78px;
+                                    width: parent.width;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: row.selected ? #BCDAD5 : Theme.line;
+                                    background: row-touch.has-hover && !row.selected ? #F7F9FA : white;
+                                    Rectangle {
+                                        x: 0px;
+                                        width: 3px;
+                                        height: parent.height;
+                                        background: row.selected ? Theme.accent : transparent;
+                                    }
+                                    VerticalLayout {
+                                        x: 0px;
+                                        width: parent.width;
+                                        padding-left: 16px;
+                                        padding-right: 12px;
+                                        padding-top: 10px;
+                                        padding-bottom: 8px;
+                                        spacing: 4px;
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            Text {
+                                                text: row.title == "" ? "未命名" : row.title;
+                                                font-size: 14px;
+                                                font-weight: 600;
+                                                color: Theme.ink;
+                                                overflow: elide;
+                                                horizontal-stretch: 1;
+                                                horizontal-alignment: left;
+                                            }
+                                            Rectangle {
+                                                height: 20px;
+                                                border-radius: 10px;
+                                                background: row.badge-kind == "fired" ? #FFF1D6 : row.badge-kind == "pending" ? Theme.accent-soft : row.badge-kind == "recurring" ? #E7EEF8 : row.badge-kind == "snooze" ? #FFF4E5 : #EEF1F4;
+                                                HorizontalLayout {
+                                                    padding-left: 8px;
+                                                    padding-right: 8px;
+                                                    alignment: center;
+                                                    Text {
+                                                        text: row.badge;
+                                                        font-size: 12px;
+                                                        font-weight: 500;
+                                                        color: row.badge-kind == "fired" ? #7A4A00 : row.badge-kind == "pending" ? Theme.accent : row.badge-kind == "recurring" ? #1D4E89 : row.badge-kind == "snooze" ? #8A5A00 : Theme.label;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Text { text: row.summary; font-size: 12px; color: Theme.muted; overflow: elide; horizontal-alignment: left; }
+                                        Text { text: row.when-text; font-size: 12px; color: Theme.muted; overflow: elide; horizontal-alignment: left; }
+                                    }
+                                    row-touch := TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        clicked => { root.select-reminder(row.id); }
+                                    }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { width: 1px; background: Theme.line; }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    ScrollView {
+                        vertical-stretch: 1;
+                        width: 100%;
+                        VerticalLayout {
+                            padding-left: 28px;
+                            padding-right: 28px;
+                            padding-top: 24px;
+                            padding-bottom: 20px;
+                            spacing: 16px;
+                            alignment: start;
+                            Text { text: root.editor-heading; font-size: 20px; font-weight: 600; color: Theme.ink; }
+                            if root.banner != "": Rectangle {
+                                background: Theme.warn-bg;
+                                border-width: 1px;
+                                border-color: Theme.warn-line;
+                                border-radius: 8px;
+                                HorizontalLayout {
+                                    padding: 10px;
+                                    spacing: 10px;
+                                    alignment: center;
+                                    Text {
+                                        text: root.banner;
+                                        wrap: word-wrap;
+                                        font-size: 13px;
+                                        color: Theme.warn-ink;
+                                        horizontal-stretch: 1;
+                                    }
+                                    if root.history-hint != "": Text {
+                                        text: root.history-hint;
+                                        font-size: 12px;
+                                        color: Theme.warn-ink;
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                background: white;
+                                border-width: 1px;
+                                border-color: Theme.line;
+                                border-radius: 8px;
+                                VerticalLayout {
+                                    padding: 20px;
+                                    spacing: 14px;
+                                    alignment: start;
+                                    Text { text: "基本信息"; font-size: 14px; font-weight: 600; color: Theme.ink; }
+                                    HorizontalLayout {
+                                        Text { text: "标题"; font-size: 13px; font-weight: 500; color: Theme.label; }
+                                        Text { text: " *"; font-size: 13px; color: Theme.danger; }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        Text { text: root.title-count; font-size: 12px; color: Theme.muted; }
+                                    }
+                                    title-edit := Field {
+                                        text <=> root.form-title;
+                                        placeholder: "例如：晚上记得打电话";
+                                        edited => { root.draft-edited(); }
+                                    }
+                                    FieldError { message: root.title-error; }
+                                    HorizontalLayout {
+                                        Text { text: "正文"; font-size: 13px; font-weight: 500; color: Theme.label; }
+                                        Text { text: "（可选）"; font-size: 13px; color: Theme.muted; }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        Text { text: root.body-count; font-size: 12px; color: Theme.muted; }
+                                    }
+                                    body-edit := BodyField {
+                                        text <=> root.form-body;
+                                        placeholder: "可选。写上需要看到的具体内容";
+                                        edited => { root.draft-edited(); }
+                                    }
+                                    FieldError { message: root.body-error; }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 16px;
+                                alignment: start;
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    background: white;
+                                    border-width: 1px;
+                                    border-color: Theme.line;
+                                    border-radius: 8px;
+                                    VerticalLayout {
+                                        padding: 20px;
+                                        spacing: 14px;
+                                        alignment: start;
+                                        Text { text: "提醒时间"; font-size: 14px; font-weight: 600; }
+                                        Rectangle {
+                                            height: 36px;
+                                            border-radius: 8px;
+                                            background: #EEF1F4;
+                                            HorizontalLayout {
+                                                padding: 2px;
+                                                spacing: 2px;
+                                                SegButton { label: "延迟"; active: root.kind == "delay"; clicked => { root.kind-changed("delay"); } }
+                                                SegButton { label: "指定时间"; active: root.kind == "at"; clicked => { root.kind-changed("at"); } }
+                                                SegButton { label: "Cron"; active: root.kind == "cron"; clicked => { root.kind-changed("cron"); } }
+                                            }
+                                        }
+                                        if root.kind == "delay": VerticalLayout {
+                                            spacing: 12px;
+                                            alignment: start;
+                                            Text { text: "多少分钟后提醒"; font-size: 13px; font-weight: 500; color: Theme.label; }
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                alignment: center;
+                                                StepperButton { label: "−"; clicked => { root.minutes-step(-1); } }
+                                                minutes-edit := Field {
+                                                    width: 72px;
+                                                    text <=> root.form-minutes;
+                                                    placeholder: "分钟";
+                                                    align-center: true;
+                                                    font-name: root.mono-font;
+                                                    edited => { root.draft-edited(); }
+                                                }
+                                                StepperButton { label: "+"; clicked => { root.minutes-step(1); } }
+                                                Text { text: "分钟"; font-size: 14px; color: Theme.label; }
+                                            }
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                Chip { label: "5 分钟"; clicked => { root.minutes-preset(5); } }
+                                                Chip { label: "10 分钟"; clicked => { root.minutes-preset(10); } }
+                                                Chip { label: "30 分钟"; clicked => { root.minutes-preset(30); } }
+                                                Chip { label: "1 小时"; clicked => { root.minutes-preset(60); } }
+                                            }
+                                            if root.delay-hint != "": Rectangle {
+                                                background: Theme.accent-soft;
+                                                border-radius: 6px;
+                                                VerticalLayout {
+                                                    padding: 8px;
+                                                    Text { text: root.delay-hint; font-size: 13px; color: Theme.accent-ink; wrap: word-wrap; }
+                                                }
+                                            }
+                                            FieldError { message: root.delay-error; }
+                                        }
+                                        if root.kind == "at": VerticalLayout {
+                                            spacing: 12px;
+                                            alignment: start;
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                VerticalLayout {
+                                                    spacing: 6px;
+                                                    alignment: start;
+                                                    horizontal-stretch: 1;
+                                                    Text { text: "日期"; font-size: 13px; font-weight: 500; color: Theme.label; }
+                                                    date-edit := Field {
+                                                        text <=> root.form-date;
+                                                        placeholder: "YYYY-MM-DD";
+                                                        font-name: root.mono-font;
+                                                        edited => { root.draft-edited(); }
+                                                    }
+                                                    FieldError { message: root.date-error; }
+                                                }
+                                                VerticalLayout {
+                                                    spacing: 6px;
+                                                    alignment: start;
+                                                    horizontal-stretch: 1;
+                                                    Text { text: "时间（24 小时制）"; font-size: 13px; font-weight: 500; color: Theme.label; }
+                                                    time-edit := Field {
+                                                        text <=> root.form-time;
+                                                        placeholder: "HH:MM";
+                                                        font-name: root.mono-font;
+                                                        edited => { root.draft-edited(); }
+                                                    }
+                                                    FieldError { message: root.time-error; }
+                                                }
+                                            }
+                                            if root.at-hint != "": Rectangle {
+                                                background: Theme.accent-soft;
+                                                border-radius: 6px;
+                                                VerticalLayout {
+                                                    padding: 8px;
+                                                    Text { text: root.at-hint; font-size: 13px; color: Theme.accent-ink; wrap: word-wrap; }
+                                                }
+                                            }
+                                        }
+                                        if root.kind == "cron": VerticalLayout {
+                                            spacing: 10px;
+                                            alignment: start;
+                                            Text { text: "Cron 表达式"; font-size: 13px; font-weight: 500; color: Theme.label; }
+                                            cron-edit := Field {
+                                                text <=> root.form-cron;
+                                                placeholder: "分 时 日 月 周，例如 0 9 * * 1-5";
+                                                font-name: root.mono-font;
+                                                edited => { root.draft-edited(); }
+                                            }
+                                            Text { text: "5 段，从分钟开始。日与周同时限制时，满足任一即触发。"; font-size: 12px; color: Theme.muted; wrap: word-wrap; }
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                Chip { label: "每小时"; clicked => { root.preset("0 * * * *"); } }
+                                                Chip { label: "每天 9:00"; clicked => { root.preset("0 9 * * *"); } }
+                                                Chip { label: "工作日 9:00"; clicked => { root.preset("0 9 * * 1-5"); } }
+                                                Chip { label: "每周一 10:00"; clicked => { root.preset("0 10 * * 1"); } }
+                                            }
+                                            FieldError { message: root.cron-error; }
+                                            if root.cron-error == "" && root.preview-lines.length > 0: Rectangle {
+                                                border-width: 1px;
+                                                border-color: Theme.line;
+                                                border-radius: 6px;
+                                                VerticalLayout {
+                                                    spacing: 0px;
+                                                    alignment: start;
+                                                    Rectangle {
+                                                        height: 28px;
+                                                        background: Theme.sidebar;
+                                                        VerticalLayout {
+                                                            padding-left: 12px;
+                                                            alignment: center;
+                                                            Text { text: "接下来 10 次触发"; font-size: 12px; font-weight: 500; color: Theme.label; }
+                                                        }
+                                                    }
+                                                    ScrollView {
+                                                        height: 132px;
+                                                        VerticalLayout {
+                                                            padding: 4px;
+                                                            alignment: start;
+                                                            for line in root.preview-lines: Text {
+                                                                text: line.text;
+                                                                font-family: root.mono-font;
+                                                                font-size: 13px;
+                                                                height: 24px;
+                                                                color: Theme.ink;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    background: white;
+                                    border-width: 1px;
+                                    border-color: Theme.line;
+                                    border-radius: 8px;
+                                    VerticalLayout {
+                                        padding: 20px;
+                                        spacing: 14px;
+                                        alignment: start;
+                                        Text { text: "通知方式"; font-size: 14px; font-weight: 600; }
+                                        HorizontalLayout {
+                                            spacing: 12px;
+                                            alignment: center;
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                spacing: 2px;
+                                                Text { text: "启用此提醒"; font-size: 14px; font-weight: 500; }
+                                                Text { text: "关闭后不会触发，也不会弹窗"; font-size: 12px; color: Theme.muted; wrap: word-wrap; }
+                                            }
+                                            Rectangle {
+                                                width: 40px;
+                                                height: 22px;
+                                                border-radius: 11px;
+                                                background: root.form-enabled ? Theme.accent : #D0D5DD;
+                                                Rectangle {
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    border-radius: 9px;
+                                                    y: 2px;
+                                                    x: root.form-enabled ? 20px : 2px;
+                                                    background: white;
+                                                }
+                                                TouchArea {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.form-enabled = !root.form-enabled;
+                                                        root.draft-edited();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Rectangle { height: 1px; background: #EEF1F4; }
+                                        HorizontalLayout {
+                                            spacing: 10px;
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 18px;
+                                                height: 18px;
+                                                border-radius: 4px;
+                                                background: root.form-sound ? Theme.accent : white;
+                                                border-width: root.form-sound ? 0px : 1px;
+                                                border-color: Theme.field;
+                                                Text {
+                                                    text: root.form-sound ? "✓" : "";
+                                                    color: white;
+                                                    font-size: 12px;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                                TouchArea {
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.form-sound = !root.form-sound;
+                                                        root.draft-edited();
+                                                    }
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                spacing: 2px;
+                                                Text { text: "播放铃声"; font-size: 14px; font-weight: 500; }
+                                                Text { text: "弹窗出现时播放提示音"; font-size: 12px; color: Theme.muted; }
+                                            }
+                                        }
+                                        Rectangle {
+                                            background: Theme.sidebar;
+                                            border-width: 1px;
+                                            border-color: Theme.line;
+                                            border-radius: 6px;
+                                            height: 32px;
+                                            VerticalLayout {
+                                                padding-left: 12px;
+                                                alignment: center;
+                                                Text { text: root.sound-label; font-size: 13px; color: Theme.secondary; overflow: elide; }
+                                            }
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            QuietButton { label: "试听"; clicked => { root.preview-sound(); } }
+                                            QuietButton { label: "选择文件…"; clicked => { root.browse-open(); } }
+                                            QuietButton { label: "恢复默认"; clicked => { root.use-default-sound(); } }
+                                        }
+                                        Text { text: "支持 WAV / MP3 / OGG / FLAC，不超过 15 MB"; font-size: 12px; color: Theme.muted; wrap: word-wrap; }
+                                        FieldError { message: root.sound-error; }
+                                        FieldError { message: root.form-error; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        height: 64px;
+                        background: white;
+                        Rectangle { y: 0px; height: 1px; width: parent.width; background: Theme.line; }
+                        HorizontalLayout {
+                            width: 100%;
+                            height: 100%;
+                            padding-left: 28px;
+                            padding-right: 28px;
+                            spacing: 12px;
+                            cross-axis-alignment: center;
+                            if root.delete-enabled: QuietButton {
+                                label: "删除";
+                                danger: true;
+                                clicked => { root.delete-request(); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            Text { text: "Ctrl+S 保存 · Ctrl+A 全选"; font-size: 12px; color: Theme.muted; }
+                            QuietButton { label: "还原"; clicked => { root.revert(); } }
+                            PrimaryButton { label: "保存"; clicked => { root.save(); } }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                height: 28px;
+                background: Theme.sidebar;
+                HorizontalLayout {
+                    width: 100%;
+                    height: 100%;
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 8px;
+                    cross-axis-alignment: center;
+                    Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #12B76A; }
+                    Text { text: "后台调度运行中"; font-size: 12px; color: Theme.muted; vertical-alignment: center; }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: root.footer-text; font-size: 12px; color: Theme.muted; }
+                }
+            }
+        }
+    }
+
+    if root.hover-tip != "": Rectangle {
+        x: min(root.hover-tip-x, parent.width - self.width - 12px);
+        y: root.hover-tip-y;
+        z: 80;
+        height: 28px;
+        background: #1C2833;
+        border-radius: 6px;
+        hover-label := Text {
+            x: 10px;
+            y: 6px;
+            text: root.hover-tip;
+            color: white;
+            font-size: 12px;
+        }
+        width: hover-label.width + 20px;
+    }
+
+    if root.dialog != "": Rectangle {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        background: #6616212B;
+        TouchArea {}
+        Rectangle {
+            width: 420px;
+            height: 200px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: white;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.line;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                Text { text: root.dialog-title; font-size: 18px; font-weight: 600; color: Theme.ink; }
+                Text { text: root.dialog-message; wrap: word-wrap; font-size: 14px; color: Theme.secondary; vertical-stretch: 1; }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    QuietButton { label: "取消"; clicked => { root.dialog-cancel(); } }
+                    PrimaryButton {
+                        label: root.dialog == "delete" ? "删除" : "放弃修改";
+                        clicked => { root.dialog-confirm(); }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.browser-open: Rectangle {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        background: #6616212B;
+        TouchArea {}
+        Rectangle {
+            width: 560px;
+            height: 480px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: white;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.line;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+                Text { text: "选择铃声"; font-size: 18px; font-weight: 600; color: Theme.ink; }
+                Text { text: "支持 wav、mp3、ogg、flac，不超过 15 MB。也可以把路径粘贴到下面。"; font-size: 12px; color: Theme.muted; wrap: word-wrap; }
+                path-edit := Field {
+                    text <=> root.browser-path;
+                    placeholder: "铃声文件路径";
+                    font-name: root.mono-font;
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    border-radius: 6px;
+                    ListView {
+                        width: 100%;
+                        height: 100%;
+                        for entry in root.dir-entries: Rectangle {
+                            height: 32px;
+                            background: entry.path == root.browser-picked ? Theme.accent-soft : (entry-touch.has-hover ? #F7F9FA : transparent);
+                            entry-touch := TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                clicked => { root.browse-enter(entry.path, entry.kind); }
+                            }
+                            Text {
+                                x: 10px;
+                                text: entry.label;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                width: parent.width - 16px;
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    QuietButton { label: "取消"; clicked => { root.browse-cancel(); } }
+                    PrimaryButton { label: "使用此路径"; clicked => { root.browse-use(); } }
+                }
+            }
+        }
+    }
+}
+
+export component PopupWindow inherits Window {
+    in-out property <string> window-title: "提醒";
+    title: window-title;
+    icon: @image-url("../assets/icon-128.png");
+    width: 520px;
+    height: 560px;
+    background: white;
+    in-out property <string> ui-font: "Noto Sans CJK SC";
+    default-font-family: ui-font;
+    default-font-size: 14px;
+
+    in-out property <string> heading: "";
+    in-out property <string> body: "";
+    in-out property <string> when-text: "";
+    in-out property <string> note: "";
+    in-out property <string> kicker: "提醒";
+    in-out property <string> kind-label: "延迟提醒";
+    in-out property <bool> is-snooze: false;
+
+    callback dismiss();
+    callback open-main();
+    callback snooze(int);
+
+    VerticalLayout {
+        Rectangle { height: 3px; background: root.is-snooze ? #B7791F : Theme.accent; }
+        VerticalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 20px;
+            spacing: 14px;
+            vertical-stretch: 1;
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: center;
+                Rectangle {
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 10px;
+                    background: root.is-snooze ? #FFF1D6 : Theme.accent-soft;
+                    Text {
+                        text: root.is-snooze ? "再" : "铃";
+                        color: root.is-snooze ? #9A5B00 : Theme.accent;
+                        font-size: 14px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    Text {
+                        text: root.kicker;
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: root.is-snooze ? #9A5B00 : Theme.accent;
+                    }
+                    Text { text: root.when-text; font-size: 12px; color: Theme.muted; wrap: word-wrap; }
+                }
+                Rectangle {
+                    height: 22px;
+                    border-radius: 11px;
+                    background: #EEF1F4;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        alignment: center;
+                        Text { text: root.kind-label; font-size: 12px; font-weight: 500; color: Theme.label; }
+                    }
+                }
+            }
+            Text { text: root.heading; font-size: 22px; font-weight: 600; color: Theme.ink; wrap: word-wrap; }
+            Rectangle {
+                height: 140px;
+                background: Theme.sidebar;
+                border-width: 1px;
+                border-color: Theme.line;
+                border-radius: 8px;
+                ScrollView {
+                    width: 100%;
+                    height: 100%;
+                    VerticalLayout {
+                        padding: 14px;
+                        Text {
+                            text: root.body == "" ? "（没有正文）" : root.body;
+                            wrap: word-wrap;
+                            font-size: 14px;
+                            color: Theme.secondary;
+                        }
+                    }
+                }
+            }
+            if root.note != "": Text { text: root.note; font-size: 12px; color: Theme.muted; wrap: word-wrap; }
+            Text { text: "稍后提醒"; font-size: 13px; font-weight: 600; color: Theme.secondary; }
+            Text { text: "到时间后会再次弹出，并重新播放铃声。按需要选择间隔。"; font-size: 12px; color: Theme.muted; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 8px;
+                SnoozeChip { label: "5 分钟"; clicked => { root.snooze(5); } }
+                SnoozeChip { label: "15 分钟"; clicked => { root.snooze(15); } }
+                SnoozeChip { label: "30 分钟"; clicked => { root.snooze(30); } }
+                SnoozeChip { label: "1 小时"; clicked => { root.snooze(60); } }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+        Rectangle {
+            height: 68px;
+            background: white;
+            Rectangle { y: 0px; height: 1px; width: parent.width; background: Theme.line; }
+            HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                padding-left: 24px;
+                padding-right: 24px;
+                spacing: 8px;
+                cross-axis-alignment: center;
+                QuietButton { label: "打开主窗口"; clicked => { root.open-main(); } }
+                Rectangle { horizontal-stretch: 1; }
+                PrimaryButton { label: "知道了"; clicked => { root.dismiss(); } }
+            }
+        }
+    }
+}
+
+component TrayRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger: false;
+    callback clicked();
+    height: 34px;
+    border-radius: 6px;
+    background: area.pressed ? (danger ? #FEE4E2 : #E6EBEF) : area.has-hover ? (danger ? #FEF3F2 : #F3F6F8) : transparent;
+    Text {
+        x: 12px;
+        y: 0px;
+        width: parent.width - 24px;
+        height: 100%;
+        text: root.label;
+        font-size: 13px;
+        color: danger && area.has-hover ? Theme.danger : Theme.ink;
+        vertical-alignment: center;
+    }
+    area := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component AppTray inherits SystemTrayIcon {
+    icon: @image-url("../assets/icon-128.png");
+    in-out property <string> tip: "桌面提醒正在运行";
+    tooltip: tip;
+    title: "桌面提醒";
+    callback show-window();
+    callback quit-app();
+    clicked => { root.show-window(); }
+    Menu {
+        MenuItem {
+            title: "显示主窗口";
+            activated => { root.show-window(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "退出";
+            activated => { root.quit-app(); }
+        }
+    }
+}
+
+export component TrayMenu inherits Window {
+    no-frame: true;
+    width: 196px;
+    height: 84px;
+    background: white;
+    in-out property <string> ui-font: "Noto Sans CJK SC";
+    default-font-family: ui-font;
+    callback show-main();
+    callback quit-app();
+    callback dismiss();
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: white;
+        border-width: 1px;
+        border-color: Theme.button-line;
+        border-radius: 8px;
+        VerticalLayout {
+            padding: 6px;
+            spacing: 2px;
+            TrayRow { label: "显示主窗口"; clicked => { root.show-main(); root.dismiss(); } }
+            TrayRow { label: "退出"; danger: true; clicked => { root.quit-app(); } }
+        }
+    }
+}

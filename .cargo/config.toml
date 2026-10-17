@@ -1,0 +1,4 @@
+[env]
+# 本机有 libfontconfig.so.1，但没有开发包里的 fontconfig.pc。
+# 额外的 pkgconfig 目录只补这一项，不替换系统的其它 .pc。
+PKG_CONFIG_PATH = { value = "packaging/pkgconfig", relative = true }

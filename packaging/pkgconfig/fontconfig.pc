@@ -1,0 +1,9 @@
+prefix=/usr
+libdir=/opt/workspace/zml/jkit-toolbox/reminder-desktop/packaging/lib
+includedir=/usr/include
+
+Name: fontconfig
+Description: fontconfig runtime shim for builds without the dev package
+Version: 2.15.0
+Libs: -L${libdir} -lfontconfig
+Cflags: -I${includedir}
