@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use chrono::{DateTime, Local, Offset};
+use chrono::{DateTime, Datelike, Local, Offset, Timelike};
 use reminder_core::validate::arm_snooze;
 use reminder_core::{
     check_sound_file, format_point, inspect, millis_to_local, Draft, Kind, Reminder, Report,
@@ -160,6 +160,19 @@ pub fn run(smoke: bool) -> Result<(), String> {
     session.refresh_list();
     session.refresh_backups();
     session.tick_clock();
+
+    // 视觉走查辅助：设置该环境变量时启动即弹出预览弹窗（不落库、不改数据）。
+    if std::env::var_os("REMINDER_PREVIEW_POPUP").is_some() {
+        if let Some(ui) = ui.as_weak().upgrade() {
+            ui.set_form_title("晚上记得打电话".into());
+            ui.set_form_body("cd reminder-desktop\ncargo test -p reminder-core\ncargo build --release -p reminder-desktop".into());
+            ui.set_form_minutes("5".into());
+        }
+        let session = session.clone();
+        slint::Timer::single_shot(Duration::from_millis(600), move || {
+            session.preview_popup();
+        });
+    }
 
     let (notice_tx, notice_rx) = mpsc::channel::<Vec<Notice>>();
     let timer = slint::Timer::default();
@@ -348,11 +361,34 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_re
     ui.on_minutes_preset({
         let session = session.clone();
         move |minutes| session.preset_minutes(minutes)
-    });
-    ui.on_revert({
-        let session = session.clone();
-        move || session.revert()
-    });
+    });        ui.on_revert({
+            let session = session.clone();
+            move || session.revert()
+        });
+        ui.on_quick_create({
+            let session = session.clone();
+            move |title, preset| session.quick_create(title.to_string(), i32::from(preset))
+        });
+        ui.on_at_preset({
+            let session = session.clone();
+            move |index| session.at_preset(i32::from(index))
+        });
+        ui.on_cron_time_changed({
+            let session = session.clone();
+            move |text| session.cron_time_changed(text.to_string())
+        });
+        ui.on_preview_popup({
+            let session = session.clone();
+            move || session.preview_popup()
+        });
+        ui.on_minimize_window({
+            let session = session.clone();
+            move || session.minimize_main()
+        });
+        ui.on_maximize_window({
+            let session = session.clone();
+            move || session.maximize_main()
+        });
 
     if let Some(tray) = session.tray.borrow().as_ref() {
         tray.on_show_window({
@@ -370,6 +406,10 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_re
         tray.on_backup({
             let session = session.clone();
             move || session.backup_from_tray()
+        });
+        tray.on_open_settings({
+            let session = session.clone();
+            move || session.open_settings()
         });
         tray.on_quit_app({
             let session = session.clone();
@@ -507,6 +547,13 @@ impl Session {
             });
         }
         show_report(&ui, &report);
+        let cron = draft.cron.trim().to_string();
+        let head = if draft.kind.as_str() == "cron" && !cron.is_empty() {
+            format!("将按 {cron} 重复提醒")
+        } else {
+            String::new()
+        };
+        ui.set_preview_head(head.into());
         ui.set_banner(banner_text(self.loaded.borrow().as_ref(), &draft).into());
         ui.set_history_hint(history_text(self.loaded.borrow().as_ref()).into());
         ui.set_title_count(
@@ -899,10 +946,17 @@ impl Session {
         let filter = ui.get_list_filter().to_string();
         let store = lock_store(&self.store);
         let pending = store.reminders.iter().filter(|item| bucket(item) == "pending").count();
-        let fired = store.reminders.iter().filter(|item| bucket(item) == "fired").count();
         let paused = store.reminders.iter().filter(|item| bucket(item) == "paused").count();
         let total = store.reminders.len();
         let today = now.date_naive();
+        let today_fired = store
+            .reminders
+            .iter()
+            .filter(|item| {
+                item.last_fired_at_ms
+                    .is_some_and(|ms| millis_to_local(ms).date_naive() == today)
+            })
+            .count();
         let due_today = store
             .reminders
             .iter()
@@ -915,7 +969,7 @@ impl Session {
         ui.set_tab_all(total.to_string().into());
         ui.set_tab_pending(pending.to_string().into());
         ui.set_tab_today(due_today.to_string().into());
-        ui.set_tab_fired(fired.to_string().into());
+        ui.set_tab_fired(today_fired.to_string().into());
         ui.set_tab_paused(paused.to_string().into());
         ui.set_footer_text(format!("共 {total} 条提醒 · 待触发 {pending} 条").into());
         let mut items: Vec<&Reminder> = store
@@ -933,17 +987,25 @@ impl Session {
         let selected = self.selected.borrow().clone();
         let rows: Vec<ReminderRow> = items
             .iter()
-            .map(|item| {
+            .enumerate()
+            .map(|(index, item)| {
                 let text = reminder_core::list_texts(item, now);
                 ReminderRow {
                     id: item.id.clone().into(),
                     title: item.title.clone().into(),
                     summary: text.summary.into(),
                     when_text: text.when_text.into(),
+                    fired_at_text: text.fired_at_text.into(),
+                    scheduled_text: text.scheduled_text.into(),
+                    distance_text: text.distance_text.into(),
                     badge: text.badge.into(),
                     badge_kind: text.badge_kind.into(),
                     selected: selected.as_deref() == Some(item.id.as_str()),
                     sound_on: item.sound_enabled,
+                    is_last_in_group: items
+                        .get(index + 1)
+                        .map(|next| bucket(next) != bucket(item))
+                        .unwrap_or(true),
                 }
             })
             .collect();
@@ -1027,41 +1089,53 @@ impl Session {
         let id = self.popup_seq.get();
         self.popup_seq.set(id + 1);
         let index = self.popups.borrow().len() as u32;
+        // 右上角「还有 N 条」：当前弹窗栈里还叠着几条。
+        let stack = i32::try_from(self.popups.borrow().len()).unwrap_or(0) + 1;
+        popup.set_stack_count(stack);
+        for slot in self.popups.borrow().iter() {
+            slot.window.set_stack_count(stack);
+        }
 
+        let dismiss_popups = self.popups.clone();
+        popup.on_dismiss(move || dismiss_popup(&dismiss_popups, id, true));
         let popups = self.popups.clone();
-        popup.on_dismiss(move || dismiss_popup(&popups, id, true));
-        let popups = self.popups.clone();
-        let snooze_session = self.ui.clone();
-        let snooze_store = self.store.clone();
-        let snooze_wake = self.wake.clone();
-        let snooze_log = self.log.clone();
+        let session_for_snooze = self.clone();
         let reminder_id = notice.id.clone();
-        popup.on_snooze(move |minutes| {
-            let minutes = u32::try_from(minutes).unwrap_or(0);
-            let mut store = lock_store(&snooze_store);
-            let outcome = {
-                let found = store.reminders.iter_mut().find(|item| item.id == reminder_id);
-                match found {
-                    Some(reminder) => Some(arm_snooze(reminder, minutes, Local::now())),
-                    None => None,
-                }
-            };
-            match outcome {
-                Some(Ok(())) => {
-                    if let Err(error) = store.save() {
-                        snooze_log.log("ERROR", &format!("稍后提醒保存失败：{error}"));
-                    }
-                    drop(store);
-                    runtime::poke(&snooze_wake);
-                    snooze_log.log("INFO", &format!("稍后提醒 id={reminder_id} minutes={minutes}"));
-                    if let Some(ui) = snooze_session.upgrade() {
-                        ui.set_status_text(format!("将在 {minutes} 分钟后再次提醒").into());
-                    }
-                }
-                Some(Err(error)) => snooze_log.log("WARN", &error),
-                None => snooze_log.log("WARN", "稍后提醒时找不到这条提醒"),
+        popup.on_snooze({
+            let session = session_for_snooze.clone();
+            let id = id;
+            let popups = popups.clone();
+            let reminder_id = reminder_id.clone();
+            move |minutes| {
+                session.apply_snooze(&reminder_id, u32::try_from(minutes).unwrap_or(0));
+                dismiss_popup(&popups, id, true);
             }
-            dismiss_popup(&popups, id, true);
+        });
+        popup.on_snooze_tomorrow({
+            let session = session_for_snooze.clone();
+            let id = id;
+            let popups = popups.clone();
+            let reminder_id = reminder_id.clone();
+            move || {
+                let now = Local::now();
+                let minutes = u32::try_from(minutes_until(now, 9, 0) + if now.hour() < 9 { 0 } else { 24 * 60 })
+                    .unwrap_or(5)
+                    .max(1);
+                session.apply_snooze(&reminder_id, minutes);
+                dismiss_popup(&popups, id, true);
+            }
+        });
+        popup.on_show_next({
+            let popups = popups.clone();
+            move || {
+                let slots = popups.borrow();
+                let mut ordered: Vec<&PopupSlot> = slots.iter().filter(|slot| slot.id != id).collect();
+                ordered.sort_by_key(|slot| slot.id);
+                if let Some(next) = ordered.first() {
+                    let _ = next.window.show();
+                    focus_window(next.window.window());
+                }
+            }
         });
         let popups = self.popups.clone();
         popup.window().on_close_requested(move || {
@@ -1076,7 +1150,7 @@ impl Session {
             self.log.log("ERROR", &format!("无法显示提醒弹窗：{error}"));
             return;
         }
-        place_window(popup.window(), index, 520, 560, true);
+        place_window(popup.window(), index, 440, 540, true);
         let weak = popup.as_weak();
         let mut timers = Vec::new();
         for delay in [80u64, 280] {
@@ -1084,7 +1158,7 @@ impl Session {
             let weak = weak.clone();
             timer.start(slint::TimerMode::SingleShot, Duration::from_millis(delay), move || {
                 if let Some(popup) = weak.upgrade() {
-                    place_window(popup.window(), index, 520, 560, true);
+                    place_window(popup.window(), index, 440, 540, true);
                 }
             });
             timers.push(timer);
@@ -1204,8 +1278,7 @@ impl Session {
         };
         let next: Option<(String, DateTime<Local>)> = store
             .reminders
-            .iter()
-            .filter(|item| bucket(item) == "pending")
+            .iter()            .filter(|item| bucket(item) == "pending")
             .filter_map(|item| {
                 reminder_core::next_wake(std::slice::from_ref(item), now)
                     .map(|time| (item.title.clone(), time))
@@ -1216,6 +1289,205 @@ impl Session {
             None => "下次：暂无提醒".to_string(),
         };
         (status, next_text)
+    }
+
+    /// 设置入口：托盘菜单里的「设置…」。先叫回主窗口再展开设置浮层。
+    fn open_settings(&self) {
+        self.reveal_main();
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_settings_open(true);
+        }
+    }
+
+    /// 稍后提醒：改写触发时间并落盘，成功后刷新列表并提示。
+    fn apply_snooze(&self, reminder_id: &str, minutes: u32) {
+        let mut store = lock_store(&self.store);
+        let outcome = store
+            .reminders
+            .iter_mut()
+            .find(|item| item.id == reminder_id)
+            .map(|reminder| arm_snooze(reminder, minutes, Local::now()));
+        match outcome {
+            Some(Ok(())) => {
+                if let Err(error) = store.save() {
+                    self.log.log("ERROR", &format!("稍后提醒保存失败：{error}"));
+                }
+                drop(store);
+                runtime::poke(&self.wake);
+                self.log.log("INFO", &format!("稍后提醒 id={reminder_id} minutes={minutes}"));
+                if let Some(ui) = self.ui.upgrade() {
+                    ui.set_status_text(format!("将在 {minutes} 分钟后再次提醒").into());
+                }
+                self.refresh_list();
+            }
+            Some(Err(error)) => self.log.log("WARN", &error),
+            None => self.log.log("WARN", "稍后提醒时找不到这条提醒"),
+        }
+    }
+
+    fn minimize_main(&self) {
+        if let Some(ui) = self.ui.upgrade() {
+            let _ = with_winit(ui.window(), |winit_window| {
+                winit_window.set_minimized(true);
+            });
+        }
+    }
+
+    fn maximize_main(&self) {
+        if let Some(ui) = self.ui.upgrade() {
+            let _ = with_winit(ui.window(), |winit_window| {
+                let maximized = winit_window.is_maximized();
+                winit_window.set_maximized(!maximized);
+            });
+        }
+    }
+
+    /// 侧栏快速添加：点选时间即创建，标题留空时给个默认名。
+    fn quick_create(&self, title: String, preset: i32) {
+        let Some(ui) = self.ui.upgrade() else {
+            return;
+        };
+        let now = Local::now();
+        let title = {
+            let trimmed = title.trim();
+            if trimmed.is_empty() {
+                "快速提醒".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        };
+        let minutes = match preset {
+            2000 => minutes_until(now, 20, 0),
+            900 => minutes_until(now, 9, 0) + if now.hour() < 9 { 0 } else { 24 * 60 },
+            other => i64::try_from(other).unwrap_or(1),
+        }
+        .max(1);
+        let mut draft = Draft::blank();
+        draft.title = title.clone();
+        draft.kind = Kind::Delay;
+        draft.minutes = minutes.to_string();
+        let mut store = lock_store(&self.store);
+        if let Some(reason) = store.persist_block_reason().map(str::to_string) {
+            drop(store);
+            self.toast(&reason);
+            return;
+        }
+        let count = store.reminders.len();
+        let reminder = match build_reminder_mapped(&draft, None, now, count) {
+            Ok(reminder) => reminder,
+            Err(report) => {
+                drop(store);
+                show_report(&ui, &report);
+                self.toast("快速创建没有成功，请检查表单");
+                return;
+            }
+        };
+        if let Err(error) = store.upsert(reminder.clone()) {
+            drop(store);
+            self.toast(&error);
+            return;
+        }
+        drop(store);
+        runtime::poke(&self.wake);
+        self.refresh_list();
+        self.log.log("INFO", &format!("快速创建 id={} minutes={minutes}", reminder.id));
+    }
+
+    /// 指定时间页的快捷时间：0=今晚 20:00，1=今晚 21:00，2=明早 9:00，3=下周一 9:00。
+    fn at_preset(&self, index: i32) {
+        let now = Local::now();
+        let (date, time) = match index {
+            0 => (today_date(now), "20:00".to_string()),
+            1 => (today_date(now), "21:00".to_string()),
+            2 => (tomorrow_date(now), "09:00".to_string()),
+            _ => (next_monday_date(now), "09:00".to_string()),
+        };
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_kind("at".into());
+            ui.set_form_date(date.into());
+            ui.set_form_time(time.into());
+        }
+        self.reveal_errors.set(true);
+        self.refresh_validation();
+    }
+
+    /// 「每次提醒的时间」改了以后重算 Cron 前两段，日/月/周保持原样。
+    fn cron_time_changed(&self, text: String) {
+        let trimmed = text.trim().to_string();
+        let parsed = trimmed.split_once(':').and_then(|(hour, minute)| {
+            let hour: u32 = hour.trim().parse().ok()?;
+            let minute: u32 = minute.trim().parse().ok()?;
+            if hour > 23 || minute > 59 {
+                return None;
+            }
+            Some((hour, minute))
+        });
+        let Some((hour, minute)) = parsed else {
+            self.toast("时间要用 HH:MM 的格式，例如 09:00");
+            return;
+        };
+        let current = self.read_draft().cron.trim().to_string();
+        let mut parts: Vec<String> = if current.is_empty() {
+            vec!["0".into(), "9".into(), "*".into(), "*".into(), "*".into()]
+        } else {
+            current.split_whitespace().map(str::to_string).collect()
+        };
+        while parts.len() < 5 {
+            parts.push("*".into());
+        }
+        parts[0] = minute.to_string();
+        parts[1] = hour.to_string();
+        let expression = parts.join(" ");
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_kind("cron".into());
+            ui.set_form_cron(expression.clone().into());
+            ui.set_form_time(format!("{hour:02}:{minute:02}").into());
+        }
+        self.reveal_errors.set(true);
+        self.refresh_validation();
+        self.log.log("INFO", &format!("Cron 时间调整为 {expression}"));
+    }
+
+    /// 「预览弹窗」：用当前草稿拼一条提醒，直接弹一次看效果。
+    fn preview_popup(self: &Rc<Self>) {
+        let Some(ui) = self.ui.upgrade() else {
+            return;
+        };
+        let draft = self.read_draft();
+        let now = Local::now();
+        let reminder = match build_reminder_mapped(&draft, None, now, 0) {
+            Ok(reminder) => reminder,
+            Err(_) => {
+                self.toast("表单还有错误，先修正后再预览");
+                return;
+            }
+        };
+        let texts = reminder_core::list_texts(&reminder, now);
+        let when = match reminder.schedule {
+            reminder_core::Schedule::Delay { .. } | reminder_core::Schedule::At { .. } => {
+                reminder_core::next_wake(std::slice::from_ref(&reminder), now)
+                    .map(|time| reminder_core::format_point(time, now, true))
+                    .unwrap_or_else(|| texts.when_text.clone())
+            }
+            reminder_core::Schedule::Cron { .. } => texts.when_text.clone(),
+        };
+        self.open_popup(Notice {
+            id: reminder.id.clone(),
+            title: reminder.title.clone(),
+            body: if reminder.body.trim().is_empty() {
+                "（没有正文）".to_string()
+            } else {
+                reminder.body.clone()
+            },
+            when_text: when,
+            note: "这是预览，不会改动已保存的提醒。".to_string(),
+            kind_label: texts.badge.clone(),
+            snooze: false,
+            snooze_count: 0,
+            sound_enabled: false,
+            sound_path: String::new(),
+        });
+        ui.set_status_text("预览弹窗".into());
     }
 
     fn open_tray_menu(self: &Rc<Self>, anchor: xembed_tray::TrayMenuAnchor) {
@@ -1248,6 +1520,10 @@ impl Session {
             let session = session.clone();
             move || session.backup_from_tray()
         });
+        menu.on_open_settings({
+            let session = session.clone();
+            move || session.open_settings()
+        });
         menu.on_quit_app({
             let session = session.clone();
             move || session.quit_from_tray()
@@ -1258,14 +1534,37 @@ impl Session {
                 let _ = menu.hide();
             }
         });
+        // Root coordinates and the tray anchor are physical pixels. Ask winit for
+        // the scale factor of the actual anchor monitor; the main window may be on
+        // a different display with a different DPI. RandR's physical-DPI estimate
+        // remains a fallback if winit cannot match the monitor.
+        let fallback_scale = anchor.monitor_scale_milli.max(1000) as f64 / 1000.0;
         let scale = self
             .ui
             .upgrade()
-            .map(|ui| ui.window().scale_factor())
-            .unwrap_or(1.0)
-            .max(1.0);
+            .and_then(|ui| {
+                with_winit(ui.window(), |window| {
+                    let icon_x = anchor.icon_x.saturating_add(anchor.icon_w / 2);
+                    let icon_y = anchor.icon_y.saturating_add(anchor.icon_h / 2);
+                    window.available_monitors().find_map(|monitor| {
+                        let origin = monitor.position();
+                        let size = monitor.size();
+                        let right = i64::from(origin.x) + i64::from(size.width);
+                        let bottom = i64::from(origin.y) + i64::from(size.height);
+                        (i64::from(icon_x) >= i64::from(origin.x)
+                            && i64::from(icon_x) < right
+                            && i64::from(icon_y) >= i64::from(origin.y)
+                            && i64::from(icon_y) < bottom)
+                            .then(|| monitor.scale_factor())
+                    })
+                })
+            })
+            .flatten()
+            .unwrap_or(fallback_scale)
+            .max(1.0) as f32;
         let menu_w = (xembed_tray::MENU_W as f32 * scale).round() as i32;
         let menu_h = (xembed_tray::MENU_H as f32 * scale).round() as i32;
+        menu.window().set_size(slint::PhysicalSize::new(menu_w as u32, menu_h as u32));
         let (x, y) = xembed_tray::tray_menu_origin(&anchor, menu_w, menu_h);
         let position = slint::PhysicalPosition::new(x, y);
         menu.window().set_position(position);
@@ -1301,7 +1600,8 @@ impl Session {
             return;
         };
         let now = Local::now();
-        ui.set_clock_text(now.format("%H:%M:%S").to_string().into());
+        ui.set_clock_text(now.format("%H:%M").to_string().into());
+        ui.set_date_text(design_date_text(now).into());
         let offset = now.offset().fix().local_minus_utc();
         let sign = if offset >= 0 { '+' } else { '-' };
         let offset = offset.abs();
@@ -1349,6 +1649,13 @@ fn show_report(ui: &MainWindow, report: &Report) {
         .map(|text| PreviewLine { text: text.clone().into() })
         .collect();
     ui.set_preview_lines(ModelRc::from(Rc::new(VecModel::from(lines))));
+    let next = if report.preview.is_empty() {
+        String::new()
+    } else {
+        let shown: Vec<&str> = report.preview.iter().take(4).map(String::as_str).collect();
+        format!("接下来：{}", shown.join(" · "))
+    };
+    ui.set_preview_next(next.into());
 }
 
 fn field(report: &Report, name: &str) -> String {
@@ -1459,6 +1766,56 @@ fn next_millis(reminder: &Reminder, now: chrono::DateTime<Local>) -> i64 {
         .unwrap_or(i64::MAX)
 }
 
+/// 现在到今天（或调用方补一天后）h:m 还有多少分钟。
+fn minutes_until(now: DateTime<Local>, hour: u32, minute: u32) -> i64 {
+    use chrono::TimeZone as _;
+    let naive = match now.date_naive().and_hms_opt(hour, minute, 0) {
+        Some(naive) => naive,
+        None => return 60,
+    };
+    let target = match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(value) | chrono::LocalResult::Ambiguous(value, _) => value,
+        chrono::LocalResult::None => {
+            let shifted = naive + chrono::Duration::hours(1);
+            match Local.from_local_datetime(&shifted) {
+                chrono::LocalResult::Single(value) | chrono::LocalResult::Ambiguous(value, _) => value,
+                chrono::LocalResult::None => return 60,
+            }
+        }
+    };
+    (target - now).num_minutes().max(1)
+}
+
+fn design_date_text(now: DateTime<Local>) -> String {
+    let weekday = match now.weekday().num_days_from_monday() {
+        0 => "周一",
+        1 => "周二",
+        2 => "周三",
+        3 => "周四",
+        4 => "周五",
+        5 => "周六",
+        _ => "周日",
+    };
+    format!("{} 月 {} 日 · {weekday}", now.month(), now.day())
+}
+
+fn today_date(now: DateTime<Local>) -> String {
+    now.format("%Y-%m-%d").to_string()
+}
+
+fn tomorrow_date(now: DateTime<Local>) -> String {
+    (now + chrono::Duration::days(1)).format("%Y-%m-%d").to_string()
+}
+
+fn next_monday_date(now: DateTime<Local>) -> String {
+    use chrono::Datelike as _;
+    let mut day = now + chrono::Duration::days(1);
+    while day.weekday().num_days_from_monday() != 0 {
+        day += chrono::Duration::days(1);
+    }
+    day.format("%Y-%m-%d").to_string()
+}
+
 fn sound_label(path: &str) -> String {
     if path.trim().is_empty() {
         "默认铃声（内置）".into()
@@ -1492,12 +1849,13 @@ fn ui_font() -> &'static str {
 }
 
 fn mono_font() -> &'static str {
+    // 设计稿：数字与 Cron 用 JetBrains Mono，回退 DejaVu Sans Mono。
     if cfg!(windows) {
         "Consolas"
     } else if cfg!(target_os = "macos") {
         "Menlo"
     } else {
-        "DejaVu Sans Mono"
+        "JetBrains Mono"
     }
 }
 

@@ -20,6 +20,10 @@ pub struct ListText {
     pub when_text: String,
     pub badge: String,
     pub badge_kind: String,
+    pub fired_at_text: String,
+    pub scheduled_text: String,
+    /// 相对时间（如「5 分钟后」），概览大字用；无下一次触发时为空。
+    pub distance_text: String,
 }
 
 /// 把窗口外框放到某块显示器的正中，再按已打开弹窗的序号稍微错开。
@@ -259,11 +263,55 @@ pub fn list_texts(reminder: &Reminder, now: DateTime<Local>) -> ListText {
         }
     };
 
+    let fired_at_text = reminder
+        .last_fired_at_ms
+        .map(|ms| format_point(millis_to_local(ms), now, false))
+        .unwrap_or_default();
+    let scheduled_text = reminder.snooze_until_ms
+        .filter(|_| reminder.enabled)
+        .map(|ms| format_point(millis_to_local(ms), now, true))
+        .unwrap_or_else(|| match &reminder.schedule {
+            Schedule::Delay { fire_at_ms, .. } | Schedule::At { fire_at_ms } => {
+                format_point(millis_to_local(*fire_at_ms), now, false)
+            }
+            Schedule::Cron { .. } => String::new(),
+        });
+    // 相对时间：仅对已启用且确有下一次触发的提醒给出（概览「下一次提醒」大字）。
+    let distance_text = if reminder.enabled && reminder.status != Status::Fired {
+        let next_at: Option<DateTime<Local>> = if let Some(until) = reminder.snooze_until_ms {
+            Some(millis_to_local(until))
+        } else {
+            match &reminder.schedule {
+                Schedule::Delay { fire_at_ms, .. } | Schedule::At { fire_at_ms } => {
+                    Some(millis_to_local(*fire_at_ms))
+                }
+                Schedule::Cron { expression } => {
+                    let next = parse_cron(expression).ok().and_then(|cron| {
+                        let origin_ms = reminder
+                            .last_occurrence_ms
+                            .unwrap_or(reminder.created_at_ms);
+                        cron.find_next_occurrence(&millis_to_local(origin_ms), false).ok()
+                    });
+                    next
+                }
+            }
+        };
+        next_at
+            .filter(|at| *at > now)
+            .map(|at| format_distance(now, at))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
     ListText {
         summary,
         when_text,
         badge: badge.to_string(),
         badge_kind: badge_kind.to_string(),
+        fired_at_text,
+        scheduled_text,
+        distance_text,
     }
 }
 

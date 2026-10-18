@@ -1,0 +1,144 @@
+// 图标组件：一个字形一个组件，深浅主题各指一张 4 倍图。
+// 生成脚本见 packaging/icons/gen-icons.py，字形取自设计稿使用的 lucide 图标。
+
+import { Theme } from "theme.slint";
+
+export component IconBase inherits Image {
+    in property <length> s: 16px;
+    width: s;
+    height: s;
+}
+
+export component IcBellPri inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/bell-pri-dark.png") : @image-url("../assets/icons/bell-pri.png");
+}
+
+export component IcBellOnPri inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/bell-on-pri-dark.png") : @image-url("../assets/icons/bell-on-pri.png");
+}
+
+export component IcCheckOnPri inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/check-on-pri-dark.png") : @image-url("../assets/icons/check-on-pri.png");
+}
+
+export component IcClockPri inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/clock-pri-dark.png") : @image-url("../assets/icons/clock-pri.png");
+}
+
+export component IcClockMuted inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/clock-muted-dark.png") : @image-url("../assets/icons/clock-muted.png");
+}
+
+export component IcClockWarn inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/clock-warn-dark.png") : @image-url("../assets/icons/clock-warn.png");
+}
+
+export component IcPlusPri inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/plus-pri-dark.png") : @image-url("../assets/icons/plus-pri.png");
+}
+
+export component IcPlusInk inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/plus-ink-dark.png") : @image-url("../assets/icons/plus-ink.png");
+}
+
+export component IcMinusInk inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/minus-ink-dark.png") : @image-url("../assets/icons/minus-ink.png");
+}
+
+export component IcDownloadText2 inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/download-text2-dark.png") : @image-url("../assets/icons/download-text2.png");
+}
+
+export component IcTrayDownText2 inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/tray-down-text2-dark.png") : @image-url("../assets/icons/tray-down-text2.png");
+}
+
+export component IcPowerText2 inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/power-text2-dark.png") : @image-url("../assets/icons/power-text2.png");
+}
+
+export component IcSearchPh inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/search-ph-dark.png") : @image-url("../assets/icons/search-ph.png");
+}
+
+export component IcRepeatPri inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/repeat-pri-dark.png") : @image-url("../assets/icons/repeat-pri.png");
+}
+
+export component IcCheckCircleOk inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/check-circle-ok-dark.png") : @image-url("../assets/icons/check-circle-ok.png");
+}
+
+export component IcPauseCirclePh inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/pause-circle-ph-dark.png") : @image-url("../assets/icons/pause-circle-ph.png");
+}
+
+export component IcChevronLeftText2 inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/chevron-left-text2-dark.png") : @image-url("../assets/icons/chevron-left-text2.png");
+}
+
+export component IcChevronDownText3 inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/chevron-down-text3-dark.png") : @image-url("../assets/icons/chevron-down-text3.png");
+}
+
+export component IcChevronRightText3 inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/chevron-right-text3-dark.png") : @image-url("../assets/icons/chevron-right-text3.png");
+}
+
+export component IcCalendarText3 inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/calendar-text3-dark.png") : @image-url("../assets/icons/calendar-text3.png");
+}
+
+export component IcCheckOk inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/check-ok-dark.png") : @image-url("../assets/icons/check-ok.png");
+}
+
+export component IcTrashDanger inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/trash-danger-dark.png") : @image-url("../assets/icons/trash-danger.png");
+}
+
+export component IcExternalLinkText2 inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/external-link-text2-dark.png") : @image-url("../assets/icons/external-link-text2.png");
+}
+
+// 标题栏图标固定用 #9AA2AB，深浅主题都不变。
+export component IcTitleMinus inherits IconBase {
+    source: @image-url("../assets/icons/minus-title.png");
+}
+
+export component IcTitleSquare inherits IconBase {
+    source: @image-url("../assets/icons/square-title.png");
+}
+
+export component IcTitleClose inherits IconBase {
+    source: @image-url("../assets/icons/close-title.png");
+}
+
+// 托盘菜单固定配色（设计稿示意：#2B3844 / #0B5A54 / #667583 / #B42318）。
+export component IcMenuWindow inherits IconBase {
+    source: @image-url("../assets/icons/window-menu.png");
+}
+
+export component IcMenuWindowPri inherits IconBase {
+    source: @image-url("../assets/icons/window-menu-pri.png");
+}
+
+export component IcMenuPlus inherits IconBase {
+    source: @image-url("../assets/icons/plus-menu.png");
+}
+
+export component IcMenuClock inherits IconBase {
+    source: @image-url("../assets/icons/clock-menu.png");
+}
+
+export component IcMenuDownload inherits IconBase {
+    source: @image-url("../assets/icons/download-menu.png");
+}
+
+export component IcMenuGear inherits IconBase {
+    source: @image-url("../assets/icons/gear-menu.png");
+}
+
+export component IcMenuPower inherits IconBase {
+    source: @image-url("../assets/icons/power-danger.png");
+}

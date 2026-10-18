@@ -1,0 +1,440 @@
+// 提醒弹窗：440 × 540，标题栏 32 + 3px 主色条 + 内容 + 64px 底栏，照设计稿 V2 弹窗页。
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Btn, NamedIcon } from "widgets.slint";
+
+// 稍后提醒 chip：40 高、圆角 6，右上角数字键帽。
+component SnoozeChip inherits Rectangle {
+    in property <string> label;
+    in property <string> key;
+    in property <int> minutes;
+    in property <string> mono-family: "JetBrains Mono";
+    callback fired(int);
+
+    height: 40px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: area.has-hover ? Theme.pri-text : Theme.line2;
+    background: area.has-hover ? Theme.hover : Theme.surface;
+
+    Text {
+        width: 100%;
+        height: 100%;
+        text: root.label;
+        font-size: 14px;
+        font-weight: 500;
+        color: Theme.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    Text {
+        x: parent.width - 6px - self.preferred-width;
+        y: 3px;
+        text: root.key;
+        font-family: root.mono-family;
+        font-size: 10px;
+        color: Theme.text3;
+    }
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.fired(root.minutes); }
+    }
+}
+
+export component PopupWindow inherits Window {
+    no-frame: true;
+    always-on-top: true;
+    width: 440px;
+    height: 540px;
+    background: Theme.surface;
+    default-font-family: root.ui-font;
+
+    in-out property <string> ui-font: "Noto Sans CJK SC";
+    in-out property <string> mono-font: "JetBrains Mono";
+    in-out property <string> window-title: "提醒";
+    in-out property <string> kicker: "提醒";
+    in-out property <string> heading: "";
+    in-out property <string> body: "";
+    in-out property <string> when-text: "";
+    in-out property <string> kind-label: "";
+    in-out property <string> note: "";
+    in-out property <bool> is-snooze: false;
+    in-out property <int> stack-count: 1;
+
+    callback dismiss();
+    callback open-main();
+    callback snooze(int);
+    callback snooze-tomorrow();
+    callback show-next();
+
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        key-pressed(event) => {
+            if (event.text == "1") { root.snooze(5); return accept; }
+            if (event.text == "2") { root.snooze(15); return accept; }
+            if (event.text == "3") { root.snooze(30); return accept; }
+            if (event.text == "4") { root.snooze(60); return accept; }
+            if (event.text == Key.Return) { root.dismiss(); return accept; }
+            if (event.text == Key.Escape) { root.dismiss(); return accept; }
+            reject
+        }
+
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: Theme.surface;
+
+            VerticalLayout {
+                spacing: 0px;
+
+                // 标题栏
+                Rectangle {
+                    height: 32px;
+                    background: Theme.titlebar;
+                    WindowMoveArea {
+                        width: 100%;
+                        height: 100%;
+                    }
+                    Text {
+                        width: 100%;
+                        height: 100%;
+                        text: root.window-title;
+                        color: Theme.titlebar-ink;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Rectangle {
+                        x: parent.width - 14px - 12px;
+                        y: (parent.height - 12px) / 2;
+                        width: 12px;
+                        height: 12px;
+                        NamedIcon {
+                            icon-name: "title-close";
+                            s: 12px;
+                        }
+                    }
+                    Rectangle {
+                        x: parent.width - 14px - 12px - 8px;
+                        y: (parent.height - 28px) / 2;
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 4px;
+                        background: close-area.has-hover ? Theme.titlebar-hover : transparent;
+                        close-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.dismiss(); }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    height: 3px;
+                    background: Theme.pri;
+                }
+
+                VerticalLayout {
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    padding-top: 20px;
+                    spacing: 14px;
+                    vertical-stretch: 1;
+
+                    HorizontalLayout {
+                        height: 32px;
+                        spacing: 10px;
+
+                        Rectangle {
+                            width: 32px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: Theme.pri-tint;
+                            horizontal-stretch: 0;
+                            NamedIcon {
+                                icon-name: "bell-pri";
+                                s: 18px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 0px;
+                            alignment: center;
+                            Text {
+                                text: root.kicker;
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: Theme.pri-text;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: root.when-text;
+                                font-size: 12px;
+                                color: Theme.text3;
+                                overflow: elide;
+                            }
+                        }
+
+                        if root.stack-count > 1 : Rectangle {
+                            height: 24px;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: Theme.line;
+                            background: Theme.sub;
+                            horizontal-stretch: 0;
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 8px;
+                                spacing: 4px;
+                                alignment: center;
+                                Text {
+                                    text: "还有 " + (root.stack-count - 1) + " 条";
+                                    font-size: 12px;
+                                    color: Theme.text2;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 0;
+                                }
+                                NamedIcon {
+                                    icon-name: "chevron-right-text3";
+                                    s: 12px;
+                                    horizontal-stretch: 0;
+                                }
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.show-next(); }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.heading;
+                        font-size: 20px;
+                        font-weight: 600;
+                        color: Theme.text;
+                        wrap: word-wrap;
+                        vertical-stretch: 0;
+                    }
+
+                    Rectangle {
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: Theme.line;
+                        background: Theme.sub;
+                        vertical-stretch: 0;
+                        min-height: 44px;
+                        max-height: 120px;
+                        ScrollView {
+                            VerticalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+                                padding-top: 12px;
+                                padding-bottom: 12px;
+                                Text {
+                                    text: root.body;
+                                    font-size: 14px;
+                                    color: Theme.text2;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    if root.note != "" : Text {
+                        text: root.note;
+                        font-size: 12px;
+                        color: Theme.text3;
+                        wrap: word-wrap;
+                    }
+
+                    VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            height: 18px;
+                            spacing: 16px;
+                            Text {
+                                text: "稍后提醒";
+                                font-size: 13px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                                horizontal-stretch: 0;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            Text {
+                                text: "点击或按数字键";
+                                font-size: 12px;
+                                color: Theme.text3;
+                                vertical-alignment: center;
+                                horizontal-stretch: 0;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            height: 40px;
+                            spacing: 8px;
+                            SnoozeChip {
+                                horizontal-stretch: 1;
+                                label: "5 分钟";
+                                key: "1";
+                                minutes: 5;
+                                mono-family: root.mono-font;
+                                fired(m) => { root.snooze(m); }
+                            }
+                            SnoozeChip {
+                                horizontal-stretch: 1;
+                                label: "15 分钟";
+                                key: "2";
+                                minutes: 15;
+                                mono-family: root.mono-font;
+                                fired(m) => { root.snooze(m); }
+                            }
+                            SnoozeChip {
+                                horizontal-stretch: 1;
+                                label: "30 分钟";
+                                key: "3";
+                                minutes: 30;
+                                mono-family: root.mono-font;
+                                fired(m) => { root.snooze(m); }
+                            }
+                            SnoozeChip {
+                                horizontal-stretch: 1;
+                                label: "1 小时";
+                                key: "4";
+                                minutes: 60;
+                                mono-family: root.mono-font;
+                                fired(m) => { root.snooze(m); }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            height: 20px;
+                            spacing: 16px;
+                            Rectangle {
+                                height: 20px;
+                                horizontal-stretch: 0;
+                                Text {
+                                    text: "明早 9:00";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: Theme.pri-text;
+                                    vertical-alignment: center;
+                                }
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.snooze-tomorrow(); }
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            Text {
+                                text: "到点会再次弹出并播放铃声";
+                                font-size: 12px;
+                                color: Theme.text3;
+                                vertical-alignment: center;
+                                horizontal-stretch: 0;
+                            }
+                        }
+                    }
+
+                    // 余量全部沉到底部（与设计稿一致）
+                    Rectangle { vertical-stretch: 1; }
+                }
+
+                // 底栏：上方留 14px，再是 1px 分隔线 + 64px 操作区
+                Rectangle {
+                    height: 14px;
+                }
+
+                Rectangle {
+                    height: 64px;
+                    background: Theme.surface;
+                    Rectangle {
+                        y: 0px;
+                        width: 100%;
+                        height: 1px;
+                        background: Theme.line;
+                    }
+                    HorizontalLayout {
+                        padding-left: 24px;
+                        padding-right: 24px;
+                        spacing: 8px;
+
+                        Rectangle {
+                            height: 34px;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: open-area.has-hover ? Theme.line2 : transparent;
+                            background: open-area.has-hover ? Theme.hover : transparent;
+                            horizontal-stretch: 0;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 6px;
+                                alignment: center;
+                                NamedIcon {
+                                    icon-name: "external-link-text2";
+                                    s: 14px;
+                                    horizontal-stretch: 0;
+                                }
+                                Text {
+                                    text: "打开主窗口";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: Theme.text2;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 0;
+                                }
+                            }
+                            open-area := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.open-main(); }
+                            }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        Rectangle {
+                            height: 36px;
+                            border-radius: 6px;
+                            background: done-area.has-hover ? Theme.pri-h : Theme.pri;
+                            horizontal-stretch: 0;
+                            HorizontalLayout {
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                spacing: 10px;
+                                alignment: center;
+                                Text {
+                                    text: "知道了";
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: Theme.on-pri;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 0;
+                                }
+                                Text {
+                                    text: "Enter";
+                                    font-family: root.mono-font;
+                                    font-size: 11px;
+                                    color: Theme.on-pri;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 0;
+                                }
+                            }
+                            done-area := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.dismiss(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

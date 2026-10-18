@@ -1,0 +1,2475 @@
+// 主窗口：结构与尺寸照设计稿 V2 的主窗口页面（1280 × 860）逐段翻译。
+// 标题栏 32 + 顶栏 52 + 侧栏 400 + 内容区；编辑页另有 60px 吸底操作栏。
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Btn, Badge, Card, CheckBox, Chip, ErrorText, Field, HintBox, IconTextBtn, NamedIcon, SegBtn, Toggle, ToolBtn } from "widgets.slint";
+
+export struct ReminderRow {
+    id: string,
+    title: string,
+    summary: string,
+    when-text: string,
+    fired-at-text: string,
+    scheduled-text: string,
+    distance-text: string,
+    badge: string,
+    badge-kind: string,
+    selected: bool,
+    sound-on: bool,
+    is-last-in-group: bool,
+}
+
+export struct DirEntry {
+    label: string,
+    path: string,
+    kind: string,
+}
+
+export struct PreviewLine {
+    text: string,
+}
+
+// 系统标题栏：32px 深色条，标题居中，右侧三个 12px 图标（最小化 / 最大化 / 关闭）。
+component TitleBar inherits Rectangle {
+    in property <string> caption;
+    in property <length> icon-hit: 28px;
+    callback request-minimize();
+    callback request-maximize();
+    callback request-close();
+
+    height: 32px;
+    background: Theme.titlebar;
+
+    WindowMoveArea {
+        width: 100%;
+        height: 100%;
+    }
+
+    Text {
+        width: 100%;
+        height: 100%;
+        text: root.caption;
+        color: Theme.titlebar-ink;
+        font-size: 13px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    // 三个图标：右内边距 14，间距 16，图标 12px。
+    Rectangle {
+        x: parent.width - 14px - 12px;
+        y: (parent.height - 12px) / 2;
+        width: 12px;
+        height: 12px;
+        NamedIcon { icon-name: "title-close"; s: 12px; }
+    }
+    Rectangle {
+        x: parent.width - 14px - 40px;
+        y: (parent.height - 12px) / 2;
+        width: 12px;
+        height: 12px;
+        NamedIcon { icon-name: "title-square"; s: 12px; }
+    }
+    Rectangle {
+        x: parent.width - 14px - 68px;
+        y: (parent.height - 12px) / 2;
+        width: 12px;
+        height: 12px;
+        NamedIcon { icon-name: "title-minus"; s: 12px; }
+    }
+
+    Rectangle {
+        x: parent.width - 14px - 12px - 8px;
+        y: (parent.height - 28px) / 2;
+        width: root.icon-hit;
+        height: 28px;
+        border-radius: 4px;
+        background: close-area.has-hover ? Theme.titlebar-hover : transparent;
+        close-area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.request-close(); }
+        }
+    }
+    Rectangle {
+        x: parent.width - 14px - 40px - 8px;
+        y: (parent.height - 28px) / 2;
+        width: root.icon-hit;
+        height: 28px;
+        border-radius: 4px;
+        background: max-area.has-hover ? Theme.titlebar-hover : transparent;
+        max-area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.request-maximize(); }
+        }
+    }
+    Rectangle {
+        x: parent.width - 14px - 68px - 8px;
+        y: (parent.height - 28px) / 2;
+        width: root.icon-hit;
+        height: 28px;
+        border-radius: 4px;
+        background: min-area.has-hover ? Theme.titlebar-hover : transparent;
+        min-area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.request-minimize(); }
+        }
+    }
+}
+
+// 侧栏列表行：图标 20 + 标题/摘要 + 右侧等宽时间；选中主色浅底。
+component ReminderItem inherits Rectangle {
+    in property <ReminderRow> item;
+    in property <string> mono-family;
+    in property <bool> shown: true;
+    callback picked(string);
+
+    property <string> kind: root.item.badge-kind;
+    property <bool> upcoming: root.kind != "fired" && root.kind != "paused";
+    property <bool> fired: root.kind == "fired";
+    property <bool> paused: root.kind == "paused";
+    property <string> icon-name: root.kind == "snooze"
+        ? "clock-warn"
+        : root.fired
+            ? "check-circle-ok"
+            : root.paused
+                ? "pause-circle-ph"
+                : "repeat-pri";
+
+    height: root.shown ? 56px : 0px;
+    visible: root.shown;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: root.item.selected ? Theme.pri-line : transparent;
+    background: root.item.selected
+        ? Theme.pri-tint
+        : row-area.has-hover
+            ? Theme.hover
+            : transparent;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 10px;
+
+        Rectangle {
+            width: 20px;
+            height: 100%;
+            horizontal-stretch: 0;
+            NamedIcon {
+                icon-name: root.icon-name;
+                s: 16px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 0px;
+            alignment: center;
+            Text {
+                text: root.item.title;
+                font-size: 14px;
+                font-weight: root.paused ? 500 : 600;
+                color: root.fired ? Theme.text2 : root.paused ? Theme.text3 : Theme.text;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.summary;
+                font-size: 12px;
+                color: Theme.text3;
+                overflow: elide;
+            }
+        }
+
+        if root.upcoming : Text {
+            text: root.item.distance-text != "" ? root.item.distance-text : root.item.when-text;
+            font-family: root.mono-family;
+            font-size: 12px;
+            font-weight: 500;
+            color: Theme.pri-text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.fired : Text {
+            text: "重新启用";
+            font-size: 12px;
+            font-weight: 500;
+            color: Theme.warn-text;
+            vertical-alignment: center;
+        }
+    }
+
+    row-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.picked(root.item.id); }
+    }
+}
+
+// 分组标题：12px 600，右侧计数，点击即按该组筛选。
+component GroupHeader inherits Rectangle {
+    in property <string> label;
+    in property <string> count;
+    in property <bool> first: false;
+    callback clicked();
+
+    height: root.first ? 35px : 39px;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: root.first ? 12px : 16px;
+        padding-bottom: 6px;
+        spacing: 8px;
+        Text {
+            text: root.label;
+            font-size: 12px;
+            font-weight: 600;
+            color: Theme.text3;
+            vertical-alignment: center;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Text {
+            text: root.count;
+            font-size: 12px;
+            font-weight: 500;
+            color: Theme.text3;
+            vertical-alignment: center;
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// 概览数字卡：圆角 10，数字 24 600，说明 12。
+component StatCard inherits Card {
+    in property <string> number;
+    in property <string> caption;
+    in property <bool> warn: false;
+
+    background: root.warn ? Theme.warn-bg : Theme.surface;
+    border-color: root.warn ? Theme.warn-line : Theme.line;
+
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+        spacing: 2px;                                        Text {
+                                            text: root.number;
+                                            font-size: 24px;
+                                            font-weight: 600;
+            color: root.warn ? Theme.warn-text : Theme.text;
+        }
+        Text {
+            text: root.caption;
+            font-size: 12px;
+            color: root.warn ? Theme.warn-text : Theme.text3;
+        }
+    }
+}
+
+// 概览卡片里的一行：时间 76 + 圆点 8 + 标题 + 右侧状态。
+component RowLine inherits Rectangle {
+    in property <string> time-text;
+    in property <string> title;
+    in property <string> status;
+    in property <string> kind: "pending";
+    in property <bool> now-line: false;
+    in property <bool> highlighted: false;
+    in property <bool> shown: true;
+    in property <bool> divider: true;
+    in property <string> mono-family;
+
+    property <color> dot: root.kind == "fired" ? Theme.ok : root.kind == "snooze" ? Theme.warn-ic : root.kind == "paused" ? Theme.ph : Theme.pri;
+
+    height: root.shown ? (root.now-line ? 30px : 36px) : 0px;
+    visible: root.shown;
+    border-radius: root.highlighted ? 8px : 0px;
+    background: root.highlighted ? Theme.pri-tint : transparent;
+
+    HorizontalLayout {
+        padding-left: root.highlighted ? 10px : 0px;
+        padding-right: root.highlighted ? 10px : 0px;
+        padding-top: root.now-line ? 6px : 8px;
+        padding-bottom: root.now-line ? 6px : 8px;
+        spacing: 12px;
+        Text {
+            width: 44px;
+            horizontal-stretch: 0;
+            text: root.time-text;
+            font-family: root.mono-family;
+            font-size: 12px;
+            color: root.now-line ? Theme.pri-text : Theme.text3;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if !root.now-line : Rectangle {
+            width: 8px;
+            height: 100%;
+            horizontal-stretch: 0;
+            Rectangle {
+                x: 0px;
+                y: (parent.height - 8px) / 2;
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.dot;
+            }
+        }
+        if root.now-line : Rectangle { horizontal-stretch: 1; height: 100%; Rectangle { y: (parent.height - 1px) / 2; width: 100%; height: 1px; background: Theme.pri-text; opacity: 0.5; } }
+        Text {
+            horizontal-stretch: root.now-line ? 0 : 1;
+            text: root.title;
+            font-size: 13px;
+            font-weight: root.now-line ? 500 : root.kind == "pending" || root.kind == "snooze" ? 600 : 400;
+            color: root.now-line ? Theme.pri-text : root.kind == "paused" ? Theme.text3 : Theme.text2;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 0;
+            text: root.status;
+            font-size: 12px;
+            color: root.kind == "snooze" ? Theme.warn-text : root.kind == "pending" ? Theme.pri-text : Theme.text3;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.divider : Rectangle {
+        y: parent.height - 1px;
+        width: 100%;
+        height: 1px;
+        background: Theme.line;
+    }
+}
+
+// 最近记录行：时间 + 标题 + 语义徽标。
+component RecordLine inherits Rectangle {
+    in property <string> time-text;
+    in property <string> title;
+    in property <string> badge-text;
+    in property <string> badge-kind: "warn";
+    in property <bool> shown: true;
+    in property <bool> divider: true;
+
+    property <length> badge-width: ceil(record-badge-text.preferred-width / 1px) * 1px + 16px;
+    record-badge-text := Text {
+        visible: false;
+        text: root.badge-text;
+        font-size: 12px;
+        font-weight: 500;
+    }
+
+    height: root.shown ? 36px : 0px;
+    visible: root.shown;
+
+    HorizontalLayout {
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 12px;
+        Text {
+            width: 64px;
+            horizontal-stretch: 0;
+            text: root.time-text;
+            font-size: 12px;
+            color: Theme.text3;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.title;
+            font-size: 13px;
+            color: Theme.text2;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if root.badge-text != "" : Rectangle {
+            height: 100%;
+            horizontal-stretch: 0;
+            width: root.badge-width;
+            Rectangle {
+                y: (parent.height - 20px) / 2;
+                width: root.badge-width;
+                height: 20px;
+                border-radius: 10px;
+                background: root.badge-kind == "ok" ? Theme.ok-bg : root.badge-kind == "neutral" ? Theme.seg : Theme.warn-bg;
+                Text {
+                    width: parent.width - 16px;
+                    height: parent.height;
+                    x: 8px;
+                    text: root.badge-text;
+                    font-size: 12px;
+                    font-weight: 500;
+                    color: root.badge-kind == "ok" ? Theme.ok : root.badge-kind == "neutral" ? Theme.text2 : Theme.warn-text;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    if root.divider : Rectangle {
+        y: parent.height - 1px;
+        width: 100%;
+        height: 1px;
+        background: Theme.line;
+    }
+}
+
+export component MainWindow inherits Window {
+    no-frame: true;
+    title: "桌面提醒";
+    min-width: 1080px;
+    min-height: 720px;
+    preferred-width: 1280px;
+    preferred-height: 860px;
+    background: Theme.bg;
+    default-font-family: root.ui-font;
+
+    // 与 glue.rs 对接的属性：名字保持不变。
+    in-out property <string> ui-font: "Noto Sans CJK SC";
+    in-out property <string> mono-font: "JetBrains Mono";
+    in-out property <bool> list-empty: true;
+    in-out property <string> main-view: "overview";
+    in-out property <string> date-text: "";
+    in-out property <string> clock-text: "";
+    in-out property <string> zone-text: "";
+    in-out property <string> status-text: "";
+    in-out property <string> count-text: "";
+    in-out property <string> footer-text: "";
+    in-out property <string> empty-text: "";
+    in-out property <string> history-hint: "";
+    in-out property <string> tab-all: "0";
+    in-out property <string> tab-pending: "0";
+    in-out property <string> tab-today: "0";
+    in-out property <string> tab-fired: "0";
+    in-out property <string> tab-paused: "0";
+    in-out property <string> list-filter: "all";
+    in-out property <string> search-text: "";
+    in-out property <[ReminderRow]> rows: [];
+    in-out property <string> editor-heading: "新建提醒";
+    in-out property <string> banner: "";
+    in-out property <string> form-title: "";
+    in-out property <string> form-body: "";
+    in-out property <bool> form-enabled: true;
+    in-out property <string> kind: "delay";
+    in-out property <string> form-minutes: "";
+    in-out property <string> form-date: "";
+    in-out property <string> form-time: "";
+    in-out property <string> form-cron: "";
+    in-out property <string> title-count: "0/40";
+    in-out property <string> body-count: "0/200";
+    in-out property <string> title-error: "";
+    in-out property <string> body-error: "";
+    in-out property <string> delay-error: "";
+    in-out property <string> delay-hint: "";
+    in-out property <string> date-error: "";
+    in-out property <string> time-error: "";
+    in-out property <string> at-hint: "";
+    in-out property <string> cron-error: "";
+    in-out property <string> form-error: "";
+    in-out property <[PreviewLine]> preview-lines: [];
+    in-out property <string> preview-head: "";
+    in-out property <string> preview-next: "";
+    in-out property <bool> form-sound: true;
+    in-out property <string> sound-label: "";
+    in-out property <string> sound-error: "";
+    in-out property <bool> delete-enabled: false;
+    in-out property <bool> browser-open: false;
+    in-out property <string> browser-path: "";
+    in-out property <string> browser-picked: "";
+    in-out property <[DirEntry]> dir-entries: [];
+    in-out property <string> dialog: "";
+    in-out property <string> dialog-title: "";
+    in-out property <string> dialog-message: "";
+    in-out property <bool> settings-open: false;
+    in-out property <bool> autostart-on: false;
+    in-out property <[string]> backup-names: [];
+
+    callback search-changed(string);
+    callback filter-changed(string);
+    callback select-reminder(string);
+    callback new-reminder();
+    callback quick-create(string, int);
+    callback minutes-preset(int);
+    callback minutes-step(int);
+    callback preset(string);
+    callback at-preset(int);
+    callback cron-time-changed(string);
+    callback kind-changed(string);
+    callback draft-edited();
+    callback save();
+    callback revert();
+    callback delete-request();
+    callback backup();
+    callback preview-popup();
+    callback preview-sound();
+    callback browse-open();
+    callback browse-cancel();
+    callback browse-enter(string, string);
+    callback browse-use();
+    callback use-default-sound();
+    callback dialog-confirm();
+    callback dialog-cancel();
+    callback hide-to-tray();
+    callback minimize-window();
+    callback maximize-window();
+    callback quit();
+    callback autostart-changed(bool);
+    callback restore-backup(int);
+
+    // 界面本地状态
+    property <string> quick-text: "";
+    property <bool> adv-open: true;
+    property <bool> custom-cron: false;
+    property <bool> dirty: false;
+
+    // 顶栏「下一次」用第一条待触发记录。
+    property <bool> has-next: root.rows.length > 0;
+
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        key-pressed(event) => {
+            if (event.modifiers.control && event.text == "n") { root.new-reminder(); return accept; }
+            if (event.modifiers.control && event.text == "s") { root.save(); return accept; }
+            if (event.modifiers.control && event.text == "f") { search-box.take-focus(); return accept; }
+            if (event.text == Key.Escape && root.settings-open) { root.settings-open = false; return accept; }
+            if (event.text == Key.Escape && root.browser-open) { root.browse-cancel(); return accept; }
+            reject
+        }
+
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: Theme.bg;
+
+            VerticalLayout {
+                spacing: 0px;
+
+                TitleBar {
+                    caption: "桌面提醒";
+                    request-minimize => { root.minimize-window(); }
+                    request-maximize => { root.maximize-window(); }
+                    request-close => { root.hide-to-tray(); }
+                }
+
+                // 顶栏：52px，品牌 + 状态 + 下一次 + 分隔线 + 三个 32px 图标按钮
+                // （Slint 的 alignment 只影响主轴，固定高度子元素需要包一层全高容器做垂直居中。）
+                Rectangle {
+                    height: 52px;
+                    background: Theme.surface;
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 14px;
+
+                        // 品牌：28px 图标盒 + 15px/600 标题，悬停浅底
+                        // （Slint 里普通 Rectangle 不会从子元素推导首选宽度，包装层必须显式绑定。）
+                        Rectangle {
+                            height: 100%;
+                            horizontal-stretch: 0;
+                            width: brand-box.preferred-width;
+                            brand-box := Rectangle {
+                                y: (parent.height - self.height) / 2;
+                                height: 36px;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: brand-area.has-hover ? Theme.line2 : transparent;
+                                background: brand-area.has-hover ? Theme.hover : transparent;
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 100%;
+                                        horizontal-stretch: 0;
+                                        Rectangle {
+                                            width: 28px;
+                                            height: 28px;
+                                            border-radius: 8px;
+                                            background: Theme.pri;
+                                            NamedIcon {
+                                                icon-name: "bell-on-pri";
+                                                s: 16px;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+                                        }
+                                    }
+                                    Text {
+                                        text: "桌面提醒";
+                                        font-size: 15px;
+                                        font-weight: 600;
+                                        color: Theme.text;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                brand-area := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.main-view = "overview"; }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 100%;
+                            horizontal-stretch: 0;
+                            width: status-row.preferred-width;
+                            status-row := HorizontalLayout {
+                                spacing: 6px;
+                                Rectangle {
+                                    width: 8px;
+                                    height: 100%;
+                                    horizontal-stretch: 0;
+                                    Rectangle {
+                                        y: (parent.height - 8px) / 2;
+                                        width: 8px;
+                                        height: 8px;
+                                        border-radius: 4px;
+                                        background: Theme.ok;
+                                    }
+                                }
+                                Text {
+                                    text: root.status-text == "" ? "后台运行中" : root.status-text;
+                                    font-size: 12px;
+                                    color: Theme.text3;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        // 「下一次」胶囊：高 32，圆角 16
+                        Rectangle {
+                            height: 100%;
+                            horizontal-stretch: 0;
+                            width: next-pill.preferred-width;
+                            next-pill := Rectangle {
+                                y: (parent.height - self.height) / 2;
+                                height: 32px;
+                                border-radius: 16px;
+                                border-width: 1px;
+                                border-color: Theme.line;
+                                background: Theme.surface;
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 14px;
+                                    spacing: 8px;
+                                    Rectangle {
+                                        width: 14px;
+                                        height: 100%;
+                                        horizontal-stretch: 0;
+                                        NamedIcon {
+                                            icon-name: "clock-pri";
+                                            s: 14px;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                    Text {
+                                        text: "下一次";
+                                        font-size: 13px;
+                                        color: Theme.text2;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 0;
+                                    }
+                                    if root.has-next : Text {
+                                        width: min(self.preferred-width, 180px);
+                                        horizontal-stretch: 0;
+                                        text: root.rows[0].title;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        color: Theme.text;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                    if root.has-next : Text {
+                                        width: min(self.preferred-width, 120px);
+                                        horizontal-stretch: 0;
+                                        text: root.rows[0].when-text;
+                                        font-family: root.mono-font;
+                                        font-size: 12px;
+                                        font-weight: 500;
+                                        color: Theme.pri-text;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                    if !root.has-next : Text {
+                                        width: min(self.preferred-width, 200px);
+                                        horizontal-stretch: 0;
+                                        text: root.empty-text;
+                                        font-size: 12px;
+                                        color: Theme.text3;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 100%;
+                            horizontal-stretch: 0;
+                            width: 1px;
+                            Rectangle {
+                                y: (parent.height - 22px) / 2;
+                                width: 1px;
+                                height: 22px;
+                                background: Theme.line;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            height: 100%;
+                            spacing: 4px;
+                            ToolBtn {
+                                icon-name: "download-text2";
+                                tip-title: "备份";
+                                tip-body: "把全部提醒导出为备份文件，可用于迁移或恢复。";
+                                clicked => { root.backup(); }
+                            }
+                            ToolBtn {
+                                icon-name: "tray-down-text2";
+                                tip-title: "隐藏到托盘";
+                                tip-body: "关闭窗口，程序继续在后台按时提醒。点击托盘图标可重新打开。";
+                                clicked => { root.hide-to-tray(); }
+                            }
+                            ToolBtn {
+                                icon-name: "power-text2";
+                                tip-title: "退出";
+                                tip-body: "完全退出程序。退出后不会再弹出任何提醒。";
+                                danger: true;
+                                clicked => { root.quit(); }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        y: parent.height - 1px;
+                        width: 100%;
+                        height: 1px;
+                        background: Theme.line;
+                    }
+                }
+
+                // 主体：侧栏 400 + 内容区
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: 0px;
+
+                    // ── 侧栏 ──
+                    Rectangle {
+                        width: 400px;
+                        horizontal-stretch: 0;
+                        background: Theme.sub;
+
+                        VerticalLayout {
+                            spacing: 0px;
+
+                            VerticalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                padding-top: 16px;
+                                spacing: 12px;
+
+                                // 快速添加
+                                Card {
+                                    VerticalLayout {
+                                        padding: 12px;
+                                        spacing: 10px;
+
+                                        Field {
+                                            field-height: 40px;
+                                            radius: 8px;
+                                            icon-name: "plus-pri";
+                                            icon-size: 18px;
+                                            icon-x: 12px;
+                                            pad-left: 38px;
+                                            font-size: 14px;
+                                            placeholder: "想提醒自己什么？";
+                                            text <=> root.quick-text;
+                                            edited(t) => { }
+                                        }
+
+                                        VerticalLayout {
+                                            spacing: 6px;
+                                            HorizontalLayout {
+                                                spacing: 6px;
+                                                Text {
+                                                    text: "点选时间即创建";
+                                                    font-size: 12px;
+                                                    color: Theme.text3;
+                                                    vertical-alignment: center;
+                                                    horizontal-stretch: 0;
+                                                }
+                                                Chip {
+                                                    pill: true;
+                                                    chip-height: 26px;
+                                                    pad-x: 10px;
+                                                    font-size: 12px;
+                                                    label: "5 分钟后";
+                                                    clicked => { root.quick-create(root.quick-text, 5); }
+                                                }
+                                                Chip {
+                                                    pill: true;
+                                                    chip-height: 26px;
+                                                    pad-x: 10px;
+                                                    font-size: 12px;
+                                                    label: "30 分钟后";
+                                                    clicked => { root.quick-create(root.quick-text, 30); }
+                                                }
+                                                Chip {
+                                                    pill: true;
+                                                    chip-height: 26px;
+                                                    pad-x: 10px;
+                                                    font-size: 12px;
+                                                    label: "1 小时后";
+                                                    clicked => { root.quick-create(root.quick-text, 60); }
+                                                }
+                                            }
+                                            HorizontalLayout {
+                                                spacing: 6px;
+                                                Chip {
+                                                    pill: true;
+                                                    chip-height: 26px;
+                                                    pad-x: 10px;
+                                                    font-size: 12px;
+                                                    label: "今晚 20:00";
+                                                    clicked => { root.quick-create(root.quick-text, 2000); }
+                                                }
+                                                Chip {
+                                                    pill: true;
+                                                    chip-height: 26px;
+                                                    pad-x: 10px;
+                                                    font-size: 12px;
+                                                    label: "明早 9:00";
+                                                    clicked => { root.quick-create(root.quick-text, 900); }
+                                                }
+                                                Chip {
+                                                    pill: true;
+                                                    dashed: true;
+                                                    chip-height: 26px;
+                                                    pad-x: 10px;
+                                                    font-size: 12px;
+                                                    label: "更多设置…";
+                                                    clicked => { root.new-reminder(); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 搜索
+                                Rectangle {
+                                    height: 32px;
+                                    search-box := Field {
+                                        width: 100%;
+                                        height: 32px;
+                                        icon-name: "search-ph";
+                                        pad-left: 34px;
+                                        pad-right: 60px;
+                                        font-size: 13px;
+                                        placeholder: "搜索标题或正文";
+                                        text <=> root.search-text;
+                                        edited(t) => { root.search-changed(t); }
+                                    }
+                                    Rectangle {
+                                        x: parent.width - 8px - 46px;
+                                        y: 6px;
+                                        width: 46px;
+                                        height: 20px;
+                                        border-radius: 4px;
+                                        border-width: 1px;
+                                        border-color: Theme.line;
+                                        background: Theme.bg;
+                                        Text {
+                                            width: 100%;
+                                            height: 100%;
+                                            text: "Ctrl+F";
+                                            font-family: root.mono-font;
+                                            font-size: 11px;
+                                            color: Theme.text3;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 分组列表
+                            ScrollView {
+                                vertical-stretch: 1;
+                                VerticalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    padding-top: 4px;
+                                    padding-bottom: 12px;
+                                    spacing: 0px;
+                                    alignment: start;
+
+                                    if root.tab-pending != "0" && (root.list-filter == "all" || root.list-filter == "pending") : GroupHeader {
+                                        first: true;
+                                        label: "即将触发";
+                                        count: root.tab-pending;
+                                        clicked => { root.list-filter = "pending"; root.filter-changed("pending"); }
+                                    }
+                                    for row in root.rows : ReminderItem {
+                                        shown: row.badge-kind != "fired" && row.badge-kind != "paused";
+                                        mono-family: root.mono-font;
+                                        item: row;
+                                        picked(id) => {
+                                            root.select-reminder(id);
+                                            root.main-view = "edit";
+                                        }
+                                    }
+
+                                    if root.tab-fired != "0" && (root.list-filter == "all" || root.list-filter == "fired") : GroupHeader {
+                                        label: "今天已触发";
+                                        count: root.tab-fired;
+                                        clicked => { root.list-filter = "fired"; root.filter-changed("fired"); }
+                                    }
+                                    for row in root.rows : ReminderItem {
+                                        shown: row.badge-kind == "fired";
+                                        mono-family: root.mono-font;
+                                        item: row;
+                                        picked(id) => {
+                                            root.select-reminder(id);
+                                            root.main-view = "edit";
+                                        }
+                                    }
+
+                                    if root.tab-paused != "0" && (root.list-filter == "all" || root.list-filter == "paused") : GroupHeader {
+                                        label: "已停用";
+                                        count: root.tab-paused;
+                                        clicked => { root.list-filter = "paused"; root.filter-changed("paused"); }
+                                    }
+                                    for row in root.rows : ReminderItem {
+                                        shown: row.badge-kind == "paused";
+                                        mono-family: root.mono-font;
+                                        item: row;
+                                        picked(id) => {
+                                            root.select-reminder(id);
+                                            root.main-view = "edit";
+                                        }
+                                    }
+
+                                    if root.rows.length == 0 : Text {
+                                        height: 80px;
+                                        text: root.empty-text;
+                                        font-size: 13px;
+                                        color: Theme.text3;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 36px;
+                                background: Theme.sub;
+                                HorizontalLayout {
+                                    padding-left: 20px;
+                                    padding-right: 20px;
+                                    spacing: 8px;
+                                    Text {
+                                        text: root.footer-text;
+                                        font-size: 12px;
+                                        color: Theme.text3;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    Text {
+                                        text: "Ctrl+N 新建";
+                                        font-family: root.mono-font;
+                                        font-size: 12px;
+                                        color: Theme.text3;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Rectangle {
+                                    y: 0px;
+                                    width: 100%;
+                                    height: 1px;
+                                    background: Theme.line;
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            x: parent.width - 1px;
+                            width: 1px;
+                            height: 100%;
+                            background: Theme.line;
+                        }
+                    }
+
+                    // ── 内容区 ──
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 0px;
+
+                        if root.main-view == "overview" : ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                padding-left: 32px;
+                                padding-right: 32px;
+                                padding-top: 28px;
+                                padding-bottom: 28px;
+                                spacing: 18px;
+                                alignment: start;
+
+                                HorizontalLayout {
+                                    alignment: end;
+                                    spacing: 16px;
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        horizontal-stretch: 1;
+                                        Text {
+                                            text: root.date-text;
+                                            font-size: 12px;
+                                            color: Theme.text3;
+                                        }
+                                        Text {
+                                            text: "今天还有 " + root.tab-today + " 条提醒";
+                                            font-size: 22px;
+                                            font-weight: 600;
+                                            color: Theme.text;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 0;
+                                        alignment: end;
+                                        HorizontalLayout {
+                                            spacing: 4px;
+                                            Text {
+                                                text: "现在";
+                                                font-size: 12px;
+                                                color: Theme.text3;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                text: root.clock-text;
+                                                font-family: root.mono-font;
+                                                font-size: 12px;
+                                                color: Theme.text2;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 下一次提醒
+                                Rectangle {
+                                    border-radius: 12px;
+                                    border-width: 1px;
+                                    border-color: Theme.pri-line;
+                                    background: Theme.pri-tint;
+
+                                    VerticalLayout {
+                                        padding-left: 24px;
+                                        padding-right: 24px;
+                                        padding-top: 22px;
+                                        padding-bottom: 22px;
+                                        spacing: 0px;
+
+                                        if root.has-next : HorizontalLayout {
+                                            spacing: 24px;
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                spacing: 6px;
+                                                HorizontalLayout {
+                                                    height: 20px;
+                                                    spacing: 8px;
+                                                    Text {
+                                                        text: "下一次提醒";
+                                                        font-size: 12px;
+                                                        font-weight: 600;
+                                                        color: Theme.pri-text;
+                                                        vertical-alignment: center;
+                                                        horizontal-stretch: 0;
+                                                    }
+                                                    Badge {
+                                                        label: root.rows[0].badge;
+                                                        kind: root.rows[0].badge-kind == "snooze" || root.rows[0].badge-kind == "fired"
+                                                            ? "warn"
+                                                            : root.rows[0].badge-kind == "recurring"
+                                                                ? "pri"
+                                                                : "ok";
+                                                        horizontal-stretch: 0;
+                                                    }
+                                                    // 主轴起点排列：尾部弹性占位吸收余量。
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+                                                HorizontalLayout {
+                                                    height: 46px;
+                                                    spacing: 12px;
+                                                    Text {
+                                                        horizontal-stretch: 0;
+                                                        text: root.rows[0].distance-text != "" ? root.rows[0].distance-text : root.rows[0].when-text;
+                                                        font-size: 40px;
+                                                        font-weight: 600;
+                                                        color: Theme.text;
+                                                        overflow: elide;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    // 等宽时钟与 40px 大字按基线对齐（近似）。
+                                                    Rectangle {
+                                                        height: 100%;
+                                                        horizontal-stretch: 0;
+                                                        width: hero-clock.preferred-width;
+                                                        hero-clock := Text {
+                                                            y: parent.height - self.preferred-height - 3px;
+                                                            text: root.rows[0].scheduled-text;
+                                                            font-family: root.mono-font;
+                                                            font-size: 15px;
+                                                            color: Theme.text2;
+                                                        }
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+                                                Text {
+                                                    text: root.rows[0].title;
+                                                    font-size: 16px;
+                                                    font-weight: 600;
+                                                    color: Theme.text;
+                                                    overflow: elide;
+                                                }
+                                                Text {
+                                                    text: root.rows[0].summary;
+                                                    font-size: 12px;
+                                                    color: Theme.text3;
+                                                    overflow: elide;
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                horizontal-stretch: 0;
+                                                spacing: 8px;
+                                                alignment: center;
+                                                Btn {
+                                                    label: "编辑";
+                                                    btn-height: 32px;
+                                                    pad-x: 16px;
+                                                    clicked => {
+                                                        root.select-reminder(root.rows[0].id);
+                                                        root.main-view = "edit";
+                                                    }
+                                                }
+                                                Btn {
+                                                    label: "预览弹窗";
+                                                    btn-height: 32px;
+                                                    pad-x: 16px;
+                                                    clicked => { root.preview-popup(); }
+                                                }
+                                            }
+                                        }
+
+                                        if !root.has-next : Text {
+                                            height: 60px;
+                                            text: root.empty-text;
+                                            font-size: 14px;
+                                            color: Theme.text3;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    StatCard {
+                                        horizontal-stretch: 1;
+                                        number: root.tab-pending;
+                                        caption: "待触发";
+                                    }
+                                    StatCard {
+                                        horizontal-stretch: 1;
+                                        number: root.tab-fired;
+                                        caption: "今天已触发";
+                                    }
+                                    StatCard {
+                                        horizontal-stretch: 1;
+                                        number: "1";
+                                        caption: "近 7 天错过";
+                                        warn: true;
+                                    }
+                                }                                    HorizontalLayout {
+                                        spacing: 16px;
+                                        alignment: start;
+
+                                        Card {
+                                            min-width: 0px;
+                                            horizontal-stretch: 1;
+                                        VerticalLayout {
+                                            padding-left: 20px;
+                                            padding-right: 20px;
+                                            padding-top: 18px;
+                                            padding-bottom: 18px;
+                                            spacing: 4px;
+                                            Text {
+                                                height: 29px;
+                                                text: "今天时间线";
+                                                font-size: 14px;
+                                                font-weight: 600;
+                                                color: Theme.text;
+                                                vertical-alignment: center;
+                                            }
+                                            RowLine { time-text: "12:00"; title: "取快递"; status: "已触发"; kind: "fired"; mono-family: root.mono-font; }
+                                            RowLine { time-text: "19:48"; title: "晚上记得打电话"; status: "已稍后"; kind: "snooze"; mono-family: root.mono-font; }
+                                            RowLine { time-text: "19:58"; title: ""; status: "现在"; kind: "pending"; mono-family: root.mono-font; now-line: true; }
+                                            RowLine { time-text: "20:03"; title: "晚上记得打电话"; status: "5 分钟后"; kind: "pending"; mono-family: root.mono-font; highlighted: true; }
+                                            RowLine { time-text: "21:00"; title: "喝水休息一下"; status: "待触发"; kind: "pending"; mono-family: root.mono-font; divider: false; }
+                                            if root.list-empty : Text {
+                                                height: 48px;
+                                                text: "今天还没有提醒";
+                                                font-size: 13px;
+                                                color: Theme.text3;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    Card {
+                                        horizontal-stretch: 1;
+                                        VerticalLayout {
+                                            padding-left: 20px;
+                                            padding-right: 20px;
+                                            padding-top: 18px;
+                                            padding-bottom: 18px;
+                                            spacing: 4px;
+                                            Text {
+                                                height: 29px;
+                                                text: "最近记录";
+                                                font-size: 14px;
+                                                font-weight: 600;
+                                                color: Theme.text;
+                                                vertical-alignment: center;
+                                            }
+                                            RecordLine { time-text: "今天 19:48"; title: "晚上记得打电话"; badge-text: "稍后 15 分钟"; badge-kind: "warn"; }
+                                            RecordLine { time-text: "今天 12:00"; title: "取快递"; badge-text: "已确认"; badge-kind: "ok"; }
+                                            RecordLine { time-text: "昨天 09:00"; title: "站会"; badge-text: "已错过"; badge-kind: "warn"; }
+                                            RecordLine { time-text: "昨天 08:30"; title: "喝水休息一下"; badge-text: "已确认"; badge-kind: "ok"; divider: false; }
+                                            if root.list-empty : Text {
+                                                height: 48px;
+                                                text: "暂无记录";
+                                                font-size: 13px;
+                                                color: Theme.text3;
+                                                vertical-alignment: center;
+                                            }
+                                            Rectangle {
+                                                height: 1px;
+                                                background: Theme.line;
+                                            }
+                                            Text {
+                                                text: "「已错过」= 到点时程序未运行，或弹窗被直接关闭；启动时会提示补看。";
+                                                font-size: 12px;
+                                                color: Theme.text3;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.main-view == "edit" : VerticalLayout {
+                            vertical-stretch: 1;
+                            spacing: 0px;
+
+                            ScrollView {
+                                vertical-stretch: 1;
+                                VerticalLayout {
+                                    padding-left: 32px;
+                                    padding-right: 32px;
+                                    padding-top: 20px;
+                                    padding-bottom: 20px;
+                                    spacing: 14px;
+                                    alignment: start;
+
+                                    HorizontalLayout {
+                                        height: 28px;
+                                        spacing: 12px;
+                                        IconTextBtn {
+                                            icon-name: "chevron-left-text2";
+                                            icon-size: 14px;
+                                            label: "概览";
+                                            transparent: true;
+                                            btn-height: 28px;
+                                            pad-x: 10px;
+                                            clicked => { root.main-view = "overview"; }
+                                        }
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: root.editor-heading;
+                                            font-size: 20px;
+                                            font-weight: 600;
+                                            color: Theme.text;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: "已启用";
+                                            font-size: 13px;
+                                            color: Theme.text2;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 0;
+                                        }
+                                        Rectangle {
+                                            width: 40px;
+                                            height: 100%;
+                                            horizontal-stretch: 0;
+                                            Toggle {
+                                                checked <=> root.form-enabled;
+                                                toggled => {
+                                                    root.dirty = true;
+                                                    root.draft-edited();
+                                                }
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+                                        }
+                                    }
+
+                                    if root.banner != "" : Rectangle {
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: Theme.warn-line;
+                                        background: Theme.warn-bg;
+                                        HorizontalLayout {
+                                            padding-left: 12px;
+                                            padding-right: 12px;
+                                            padding-top: 8px;
+                                            padding-bottom: 8px;
+                                            Text {
+                                                text: root.banner;
+                                                font-size: 12px;
+                                                color: Theme.warn-text;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+
+                                    // 内容
+                                    Card {
+                                        VerticalLayout {
+                                            padding-left: 20px;
+                                            padding-right: 20px;
+                                            padding-top: 18px;
+                                            padding-bottom: 18px;
+                                            spacing: 12px;
+
+                                            VerticalLayout {
+                                                spacing: 6px;
+                                                HorizontalLayout {
+                                                    spacing: 4px;
+                                                    Text {
+                                                        text: "标题";
+                                                        font-size: 13px;
+                                                        font-weight: 500;
+                                                        color: Theme.text2;
+                                                        horizontal-stretch: 0;
+                                                    }
+                                                    Text {
+                                                        text: "*";
+                                                        font-size: 13px;
+                                                        color: Theme.danger;
+                                                        horizontal-stretch: 0;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                    Text {
+                                                        text: root.title-count;
+                                                        font-size: 12px;
+                                                        color: Theme.text3;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                                Field {
+                                                    width: 100%;
+                                                    font-size: 14px;
+                                                    invalid: root.title-error != "";
+                                                    placeholder: "给这条提醒起个名字";
+                                                    text <=> root.form-title;
+                                                    edited(t) => {
+                                                        root.dirty = true;
+                                                        root.draft-edited();
+                                                    }
+                                                }
+                                                if root.title-error != "" : ErrorText {
+                                                    text: root.title-error;
+                                                }
+                                            }
+
+                                            VerticalLayout {
+                                                spacing: 6px;
+                                                HorizontalLayout {
+                                                    spacing: 4px;
+                                                    Text {
+                                                        text: "正文";
+                                                        font-size: 13px;
+                                                        font-weight: 500;
+                                                        color: Theme.text2;
+                                                        horizontal-stretch: 0;
+                                                    }
+                                                    Text {
+                                                        text: "（可选）";
+                                                        font-size: 13px;
+                                                        color: Theme.text3;
+                                                        horizontal-stretch: 0;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                    Text {
+                                                        text: root.body-count;
+                                                        font-size: 12px;
+                                                        color: Theme.text3;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                                Field {
+                                                    width: 100%;
+                                                    field-height: 64px;
+                                                    multiline: true;
+                                                    font-size: 14px;
+                                                    invalid: root.body-error != "";
+                                                    placeholder: "写下要提醒的内容";
+                                                    text <=> root.form-body;
+                                                    edited(t) => {
+                                                        root.dirty = true;
+                                                        root.draft-edited();
+                                                    }
+                                                }
+                                                if root.body-error != "" : ErrorText {
+                                                    text: root.body-error;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // 何时提醒
+                                    Card {
+                                        VerticalLayout {
+                                            padding-left: 20px;
+                                            padding-right: 20px;
+                                            padding-top: 18px;
+                                            padding-bottom: 18px;
+                                            spacing: 14px;
+
+                                            Text {
+                                                text: "何时提醒";
+                                                font-size: 14px;
+                                                font-weight: 600;
+                                                color: Theme.text;
+                                            }
+
+                                            Rectangle {
+                                                height: 32px;
+                                                border-radius: 8px;
+                                                background: Theme.seg;
+                                                HorizontalLayout {
+                                                    padding: 2px;
+                                                    spacing: 2px;
+                                                    SegBtn {
+                                                        horizontal-stretch: 1;
+                                                        label: "多久之后";
+                                                        active: root.kind == "delay";
+                                                        clicked => { root.kind = "delay"; root.kind-changed("delay"); }
+                                                    }
+                                                    SegBtn {
+                                                        horizontal-stretch: 1;
+                                                        label: "指定时间";
+                                                        active: root.kind == "at";
+                                                        clicked => { root.kind = "at"; root.kind-changed("at"); }
+                                                    }
+                                                    SegBtn {
+                                                        horizontal-stretch: 1;
+                                                        label: "重复";
+                                                        active: root.kind == "cron";
+                                                        clicked => { root.kind = "cron"; root.kind-changed("cron"); }
+                                                    }
+                                                }
+                                            }
+
+                                            // 多久之后
+                                            if root.kind == "delay" : VerticalLayout {
+                                                spacing: 12px;
+                                                HorizontalLayout {
+                                                    height: 32px;
+                                                    spacing: 10px;
+                                                    Rectangle {
+                                                        width: 134px;
+                                                        height: 32px;
+                                                        horizontal-stretch: 0;
+                                                        Rectangle {
+                                                            x: 0px;
+                                                            width: 32px;
+                                                            height: 32px;
+                                                            border-radius: 6px;
+                                                            border-width: 1px;
+                                                            border-color: Theme.line2;
+                                                            background: dec-area.has-hover ? Theme.hover : Theme.surface;
+                                                            NamedIcon {
+                                                                icon-name: "minus-ink";
+                                                                s: 14px;
+                                                                x: (parent.width - self.width) / 2;
+                                                                y: (parent.height - self.height) / 2;
+                                                            }
+                                                            dec-area := TouchArea {
+                                                                mouse-cursor: pointer;
+                                                                clicked => { root.minutes-step(-5); }
+                                                            }
+                                                        }
+                                                        Rectangle {
+                                                            x: 31px;
+                                                            width: 72px;
+                                                            height: 32px;
+                                                            border-width: 1px;
+                                                            border-color: Theme.line2;
+                                                            background: Theme.input;
+                                                            TextInput {
+                                                                x: 0px;
+                                                                y: 6px;
+                                                                width: parent.width;
+                                                                height: parent.height - 12px;
+                                                                font-size: 14px;
+                                                                color: Theme.text;
+                                                                horizontal-alignment: center;
+                                                                single-line: true;
+                                                                text <=> root.form-minutes;
+                                                                edited => {
+                                                                    root.dirty = true;
+                                                                    root.draft-edited();
+                                                                }
+                                                            }
+                                                        }
+                                                        Rectangle {
+                                                            x: 102px;
+                                                            width: 32px;
+                                                            height: 32px;
+                                                            border-radius: 6px;
+                                                            border-width: 1px;
+                                                            border-color: Theme.line2;
+                                                            background: inc-area.has-hover ? Theme.hover : Theme.surface;
+                                                            NamedIcon {
+                                                                icon-name: "plus-ink";
+                                                                s: 14px;
+                                                                x: (parent.width - self.width) / 2;
+                                                                y: (parent.height - self.height) / 2;
+                                                            }
+                                                            inc-area := TouchArea {
+                                                                mouse-cursor: pointer;
+                                                                clicked => { root.minutes-step(5); }
+                                                            }
+                                                        }
+                                                    }
+                                                    Rectangle {
+                                                        height: 32px;
+                                                        border-radius: 6px;
+                                                        border-width: 1px;
+                                                        border-color: Theme.line2;
+                                                        background: Theme.input;
+                                                        horizontal-stretch: 0;
+                                                        HorizontalLayout {
+                                                            padding-left: 12px;
+                                                            padding-right: 10px;
+                                                            spacing: 8px;
+                                                            Text {
+                                                                text: "分钟";
+                                                                font-size: 14px;
+                                                                color: Theme.text;
+                                                                vertical-alignment: center;
+                                                                horizontal-stretch: 0;
+                                                            }
+                                                            Rectangle {
+                                                                width: 14px;
+                                                                height: 100%;
+                                                                horizontal-stretch: 0;
+                                                                NamedIcon {
+                                                                    icon-name: "chevron-down-text3";
+                                                                    s: 14px;
+                                                                    x: (parent.width - self.width) / 2;
+                                                                    y: (parent.height - self.height) / 2;
+                                                                }
+                                                            }
+                                                            Rectangle { horizontal-stretch: 1; }
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: "后提醒";
+                                                        font-size: 14px;
+                                                        color: Theme.text2;
+                                                        vertical-alignment: center;
+                                                        horizontal-stretch: 0;
+                                                    }
+                                                }
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    alignment: start;
+                                                    Chip {
+                                                        label: "5 分钟";
+                                                        active: root.form-minutes == "5";
+                                                        clicked => { root.minutes-preset(5); }
+                                                    }
+                                                    Chip {
+                                                        label: "15 分钟";
+                                                        active: root.form-minutes == "15";
+                                                        clicked => { root.minutes-preset(15); }
+                                                    }
+                                                    Chip {
+                                                        label: "30 分钟";
+                                                        active: root.form-minutes == "30";
+                                                        clicked => { root.minutes-preset(30); }
+                                                    }
+                                                    Chip {
+                                                        label: "1 小时";
+                                                        active: root.form-minutes == "60";
+                                                        clicked => { root.minutes-preset(60); }
+                                                    }
+                                                    Chip {
+                                                        label: "2 小时";
+                                                        active: root.form-minutes == "120";
+                                                        clicked => { root.minutes-preset(120); }
+                                                    }
+                                                }
+                                                if root.delay-error != "" : ErrorText {
+                                                    text: root.delay-error;
+                                                }
+                                                if root.delay-hint != "" : HintBox {
+                                                    icon-name: "clock-pri";
+                                                    text: root.delay-hint;
+                                                }
+                                            }
+
+                                            // 指定时间
+                                            if root.kind == "at" : VerticalLayout {
+                                                spacing: 12px;
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    alignment: start;
+                                                    Chip {
+                                                        label: "今晚 20:00";
+                                                        clicked => { root.at-preset(0); }
+                                                    }
+                                                    Chip {
+                                                        label: "今晚 21:00";
+                                                        clicked => { root.at-preset(1); }
+                                                    }
+                                                    Chip {
+                                                        label: "明早 9:00";
+                                                        clicked => { root.at-preset(2); }
+                                                    }
+                                                    Chip {
+                                                        label: "下周一 9:00";
+                                                        clicked => { root.at-preset(3); }
+                                                    }
+                                                }
+                                                HorizontalLayout {
+                                                    spacing: 12px;
+                                                    alignment: start;
+                                                    VerticalLayout {
+                                                        horizontal-stretch: 1;
+                                                        spacing: 6px;
+                                                        Text {
+                                                            text: "日期";
+                                                            font-size: 13px;
+                                                            font-weight: 500;
+                                                            color: Theme.text2;
+                                                        }
+                                                        Field {
+                                                            width: 100%;
+                                                            mono: true;
+                                                            mono-family: root.mono-font;
+                                                            font-size: 13px;
+                                                            icon-name: "calendar-text3";
+                                                            pad-left: 34px;
+                                                            invalid: root.date-error != "";
+                                                            placeholder: "2026-10-18";
+                                                            text <=> root.form-date;
+                                                            edited(t) => {
+                                                                root.dirty = true;
+                                                                root.draft-edited();
+                                                            }
+                                                        }
+                                                    }
+                                                    VerticalLayout {
+                                                        horizontal-stretch: 1;
+                                                        spacing: 6px;
+                                                        Text {
+                                                            text: "时间（24 小时制）";
+                                                            font-size: 13px;
+                                                            font-weight: 500;
+                                                            color: Theme.text2;
+                                                        }
+                                                        Field {
+                                                            width: 100%;
+                                                            mono: true;
+                                                            mono-family: root.mono-font;
+                                                            font-size: 13px;
+                                                            icon-name: "clock-muted";
+                                                            pad-left: 34px;
+                                                            invalid: root.time-error != "";
+                                                            placeholder: "20:00";
+                                                            text <=> root.form-time;
+                                                            edited(t) => {
+                                                                root.dirty = true;
+                                                                root.draft-edited();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                if root.date-error != "" : ErrorText {
+                                                    text: root.date-error;
+                                                }
+                                                if root.time-error != "" : ErrorText {
+                                                    text: root.time-error;
+                                                }
+                                                if root.at-hint != "" : HintBox {
+                                                    icon-name: "clock-pri";
+                                                    text: root.at-hint;
+                                                }
+                                            }
+
+                                            // 重复
+                                            if root.kind == "cron" : VerticalLayout {
+                                                spacing: 12px;
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    alignment: start;
+                                                    Chip {
+                                                        label: "每小时";
+                                                        active: root.form-cron == "0 * * * *";
+                                                        clicked => { root.preset("0 * * * *"); }
+                                                    }
+                                                    Chip {
+                                                        label: "每天";
+                                                        active: root.form-cron == "0 9 * * *";
+                                                        clicked => { root.preset("0 9 * * *"); }
+                                                    }
+                                                    Chip {
+                                                        label: "工作日";
+                                                        active: root.form-cron == "0 9 * * 1-5";
+                                                        clicked => { root.preset("0 9 * * 1-5"); }
+                                                    }
+                                                    Chip {
+                                                        label: "每周一";
+                                                        active: root.form-cron == "0 9 * * 1";
+                                                        clicked => { root.preset("0 9 * * 1"); }
+                                                    }
+                                                    Chip {
+                                                        label: "每月";
+                                                        active: root.form-cron == "0 9 1 * *";
+                                                        clicked => { root.preset("0 9 1 * *"); }
+                                                    }
+                                                    Chip {
+                                                        label: "自定义 Cron";
+                                                        dashed: true;
+                                                        active: root.custom-cron;
+                                                        clicked => { root.custom-cron = true; }
+                                                    }
+                                                }
+                                                HorizontalLayout {
+                                                    spacing: 12px;
+                                                    alignment: start;
+                                                    VerticalLayout {
+                                                        width: 160px;
+                                                        horizontal-stretch: 0;
+                                                        spacing: 6px;
+                                                        Text {
+                                                            text: "每次提醒的时间";
+                                                            font-size: 13px;
+                                                            font-weight: 500;
+                                                            color: Theme.text2;
+                                                        }
+                                                        Field {
+                                                            width: 100%;
+                                                            mono: true;
+                                                            mono-family: root.mono-font;
+                                                            font-size: 13px;
+                                                            icon-name: "clock-muted";
+                                                            pad-left: 34px;
+                                                            placeholder: "09:00";
+                                                            text: root.form-time;
+                                                            edited(t) => {
+                                                                root.dirty = true;
+                                                                root.cron-time-changed(t);
+                                                            }
+                                                        }
+                                                    }
+                                                    VerticalLayout {
+                                                        horizontal-stretch: 1;
+                                                        spacing: 6px;
+                                                        HorizontalLayout {
+                                                            spacing: 4px;
+                                                            Text {
+                                                                text: "Cron 表达式";
+                                                                font-size: 13px;
+                                                                font-weight: 500;
+                                                                color: Theme.text2;
+                                                                horizontal-stretch: 0;
+                                                            }
+                                                            if !root.custom-cron : Text {
+                                                                text: "（自动生成，选「自定义」后可编辑）";
+                                                                font-size: 13px;
+                                                                color: Theme.text3;
+                                                                overflow: elide;
+                                                            }
+                                                        }
+                                                        if root.custom-cron : Field {
+                                                            width: 100%;
+                                                            mono: true;
+                                                            mono-family: root.mono-font;
+                                                            font-size: 13px;
+                                                            invalid: root.cron-error != "";
+                                                            placeholder: "分 时 日 月 周";
+                                                            text <=> root.form-cron;
+                                                            edited(t) => {
+                                                                root.dirty = true;
+                                                                root.draft-edited();
+                                                            }
+                                                        }
+                                                        if !root.custom-cron : Rectangle {
+                                                            height: 32px;
+                                                            border-radius: 6px;
+                                                            border-width: 1px;
+                                                            border-color: Theme.line;
+                                                            background: Theme.sub;
+                                                            Text {
+                                                                x: 12px;
+                                                                width: parent.width - 24px;
+                                                                height: parent.height;
+                                                                text: root.form-cron;
+                                                                font-family: root.mono-font;
+                                                                font-size: 13px;
+                                                                color: Theme.text2;
+                                                                vertical-alignment: center;
+                                                                overflow: elide;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                if root.cron-error != "" : ErrorText {
+                                                    text: root.cron-error;
+                                                }
+                                                Rectangle {
+                                                    border-radius: 6px;
+                                                    background: Theme.pri-tint;
+                                                    VerticalLayout {
+                                                        padding-left: 12px;
+                                                        padding-right: 12px;
+                                                        padding-top: 10px;
+                                                        padding-bottom: 10px;
+                                                        spacing: 6px;
+                                                        HorizontalLayout {
+                                                            spacing: 8px;
+                                                            NamedIcon {
+                                                                icon-name: "repeat-pri";
+                                                                s: 14px;
+                                                                horizontal-stretch: 0;
+                                                            }
+                                                            Text {
+                                                                text: root.preview-head;
+                                                                font-size: 13px;
+                                                                font-weight: 600;
+                                                                color: Theme.pri-text;
+                                                                wrap: word-wrap;
+                                                            }
+                                                        }
+                                                        Text {
+                                                            text: root.preview-next;
+                                                            font-family: root.mono-font;
+                                                            font-size: 12px;
+                                                            color: Theme.text2;
+                                                            wrap: word-wrap;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // 弹窗与铃声
+                                    Card {
+                                        VerticalLayout {
+                                            spacing: 0px;
+
+                                            Rectangle {
+                                                height: 48px;
+                                                background: adv-area.has-hover ? Theme.hover : transparent;
+                                                HorizontalLayout {
+                                                    padding-left: 20px;
+                                                    padding-right: 20px;
+                                                    spacing: 12px;
+                                                    Text {
+                                                        text: "弹窗与铃声";
+                                                        font-size: 14px;
+                                                        font-weight: 600;
+                                                        color: Theme.text;
+                                                        vertical-alignment: center;
+                                                        horizontal-stretch: 0;
+                                                    }
+                                                    Text {
+                                                        text: "弹窗提醒 · 默认铃声 · 允许稍后提醒";
+                                                        font-size: 12px;
+                                                        color: Theme.text3;
+                                                        vertical-alignment: center;
+                                                        overflow: elide;
+                                                    }
+                                                    Rectangle {
+                                                        width: 16px;
+                                                        height: 100%;
+                                                        horizontal-stretch: 0;
+                                                        NamedIcon {
+                                                            icon-name: "chevron-down-text3";
+                                                            s: 16px;
+                                                            x: (parent.width - self.width) / 2;
+                                                            y: (parent.height - self.height) / 2;
+                                                        }
+                                                    }
+                                                }
+                                                adv-area := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => { root.adv-open = !root.adv-open; }
+                                                }
+                                            }
+
+                                            if root.adv-open : VerticalLayout {
+                                                padding-left: 20px;
+                                                padding-right: 20px;
+                                                padding-top: 14px;
+                                                padding-bottom: 18px;
+                                                spacing: 14px;
+
+                                                HorizontalLayout {
+                                                    height: 32px;
+                                                    spacing: 10px;
+                                                    Rectangle {
+                                                        width: 18px;
+                                                        height: 100%;
+                                                        horizontal-stretch: 0;
+                                                        CheckBox {
+                                                            checked <=> root.form-sound;
+                                                            toggled => {
+                                                                root.dirty = true;
+                                                                root.draft-edited();
+                                                            }
+                                                            x: (parent.width - self.width) / 2;
+                                                            y: (parent.height - self.height) / 2;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        width: 84px;
+                                                        horizontal-stretch: 0;
+                                                        text: "播放铃声";
+                                                        font-size: 14px;
+                                                        font-weight: 500;
+                                                        color: Theme.text;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Rectangle {
+                                                        horizontal-stretch: 1;
+                                                        height: 32px;
+                                                        border-radius: 6px;
+                                                        border-width: 1px;
+                                                        border-color: Theme.line;
+                                                        background: Theme.sub;
+                                                        Text {
+                                                            x: 12px;
+                                                            width: parent.width - 24px;
+                                                            height: parent.height;
+                                                            text: root.sound-label;
+                                                            font-size: 13px;
+                                                            color: Theme.text;
+                                                            vertical-alignment: center;
+                                                            overflow: elide;
+                                                        }
+                                                    }
+                                                    Btn {
+                                                        btn-height: 28px;
+                                                        pad-x: 10px;
+                                                        label: "试听";
+                                                        clicked => { root.preview-sound(); }
+                                                    }
+                                                    Btn {
+                                                        btn-height: 28px;
+                                                        pad-x: 10px;
+                                                        label: "选择文件…";
+                                                        clicked => { root.browse-open(); }
+                                                    }
+                                                    Btn {
+                                                        btn-height: 28px;
+                                                        pad-x: 10px;
+                                                        label: "默认";
+                                                        clicked => { root.use-default-sound(); }
+                                                    }
+                                                }
+                                                if root.sound-error != "" : ErrorText {
+                                                    text: root.sound-error;
+                                                }
+
+                                                HorizontalLayout {
+                                                    height: 32px;
+                                                    spacing: 10px;
+                                                    Rectangle {
+                                                        width: 18px;
+                                                        height: 100%;
+                                                        horizontal-stretch: 0;
+                                                        Rectangle {
+                                                            width: 18px;
+                                                            height: 18px;
+                                                            border-radius: 4px;
+                                                            background: Theme.pri;
+                                                            NamedIcon {
+                                                                icon-name: "check-on-pri";
+                                                                s: 12px;
+                                                                x: (parent.width - self.width) / 2;
+                                                                y: (parent.height - self.height) / 2;
+                                                            }
+                                                        }
+                                                    }
+                                                    Text {
+                                                        width: 84px;
+                                                        horizontal-stretch: 0;
+                                                        text: "稍后提醒";
+                                                        font-size: 14px;
+                                                        font-weight: 500;
+                                                        color: Theme.text;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Text {
+                                                        text: "弹窗提供 5 分钟 / 15 分钟 / 30 分钟 / 1 小时";
+                                                        font-size: 12px;
+                                                        color: Theme.text3;
+                                                        vertical-alignment: center;
+                                                        overflow: elide;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if root.form-error != "" : ErrorText {
+                                        text: root.form-error;
+                                    }
+                                }
+                            }
+
+                            // 吸底操作栏：高 60，边距 0 32
+                            Rectangle {
+                                height: 60px;
+                                background: Theme.surface;
+
+                                HorizontalLayout {
+                                    padding-left: 32px;
+                                    padding-right: 32px;
+                                    padding-top: 13px;
+                                    padding-bottom: 13px;
+                                    spacing: 8px;
+
+                                    if root.delete-enabled : IconTextBtn {
+                                        icon-name: "trash-danger";
+                                        icon-size: 15px;
+                                        label: "删除";
+                                        ink: Theme.danger;
+                                        line-color: Theme.danger-line;
+                                        btn-height: 34px;
+                                        clicked => { root.delete-request(); }
+                                    }
+                                    Btn {
+                                        transparent: true;
+                                        btn-height: 34px;
+                                        pad-x: 12px;
+                                        label: "预览弹窗";
+                                        clicked => { root.preview-popup(); }
+                                    }
+
+                                    Rectangle { horizontal-stretch: 1; }
+
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Rectangle {
+                                            width: 13px;
+                                            height: 100%;
+                                            horizontal-stretch: 0;
+                                            NamedIcon {
+                                                icon-name: root.dirty ? "clock-warn" : "check-ok";
+                                                s: 13px;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+                                        }
+                                        Text {
+                                            text: root.dirty ? "有未保存的修改" : "已保存";
+                                            font-size: 12px;
+                                            color: root.dirty ? Theme.warn-text : Theme.ok;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    Rectangle {
+                                        width: 1px;
+                                        height: 100%;
+                                        horizontal-stretch: 0;
+                                        Rectangle {
+                                            y: (parent.height - 16px) / 2;
+                                            width: 1px;
+                                            height: 16px;
+                                            background: Theme.line;
+                                        }
+                                    }
+                                    Text {
+                                        text: "Ctrl+S";
+                                        font-family: root.mono-font;
+                                        font-size: 12px;
+                                        color: Theme.text3;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 0;
+                                    }
+                                    Btn {
+                                        btn-height: 34px;
+                                        pad-x: 16px;
+                                        label: "还原";
+                                        clicked => {
+                                            root.dirty = false;
+                                            root.revert();
+                                        }
+                                    }
+                                    Btn {
+                                        primary: true;
+                                        bold: true;
+                                        btn-height: 34px;
+                                        pad-x: 22px;
+                                        label: "保存";
+                                        clicked => {
+                                            root.dirty = false;
+                                            root.save();
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    y: 0px;
+                                    width: 100%;
+                                    height: 1px;
+                                    background: Theme.line;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 选择提示音对话框 ──
+            if root.browser-open : Rectangle {
+                width: 100%;
+                height: 100%;
+                background: Theme.scrim;
+                TouchArea { }
+                Rectangle {
+                    x: (parent.width - 560px) / 2;
+                    y: (parent.height - 460px) / 2;
+                    width: 560px;
+                    height: 460px;
+                    border-radius: 10px;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    background: Theme.surface;
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 10px;
+                        Text {
+                            text: "选择提示音";
+                            font-size: 15px;
+                            font-weight: 600;
+                            color: Theme.text;
+                        }
+                        Text {
+                            text: root.browser-path;
+                            font-size: 12px;
+                            color: Theme.text3;
+                            overflow: elide;
+                        }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                spacing: 2px;
+                                alignment: start;
+                                for entry in root.dir-entries : Rectangle {
+                                    height: 32px;
+                                    border-radius: 6px;
+                                    background: entry-area.has-hover ? Theme.hover : transparent;
+                                    Text {
+                                        x: 10px;
+                                        width: parent.width - 20px;
+                                        height: parent.height;
+                                        text: entry.label;
+                                        font-size: 13px;
+                                        color: entry.kind == "dir" ? Theme.pri-text : Theme.text;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    entry-area := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.browse-enter(entry.path, entry.kind); }
+                                    }
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.browser-picked != "" ? root.browser-picked : "未选择文件";
+                                font-size: 12px;
+                                color: Theme.text2;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                            Btn {
+                                btn-height: 32px;
+                                pad-x: 16px;
+                                label: "默认铃声";
+                                clicked => { root.use-default-sound(); }
+                            }
+                            Btn {
+                                btn-height: 32px;
+                                pad-x: 16px;
+                                label: "取消";
+                                clicked => { root.browse-cancel(); }
+                            }
+                            Btn {
+                                primary: true;
+                                btn-height: 32px;
+                                pad-x: 16px;
+                                label: "使用此文件";
+                                clicked => { root.browse-use(); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 设置浮层（从托盘菜单进入） ──
+            if root.settings-open : Rectangle {
+                width: 100%;
+                height: 100%;
+                TouchArea {
+                    clicked => { root.settings-open = false; }
+                }
+                Rectangle {
+                    x: parent.width - 246px;
+                    y: 92px;
+                    width: 230px;
+                    height: 400px;
+                    border-radius: 10px;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    background: Theme.surface;
+
+                    Text {
+                        x: 16px;
+                        y: 14px;
+                        text: "外观";
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: Theme.text3;
+                    }
+                    Text {
+                        x: 16px;
+                        y: 36px;
+                        text: "主题";
+                        font-size: 14px;
+                        font-weight: 600;
+                        color: Theme.text;
+                    }
+                    Btn {
+                        x: 16px;
+                        y: 62px;
+                        width: 96px;
+                        primary: !Theme.dark;
+                        label: "浅色";
+                        clicked => { Theme.dark = false; }
+                    }
+                    Btn {
+                        x: 118px;
+                        y: 62px;
+                        width: 96px;
+                        primary: Theme.dark;
+                        label: "深色";
+                        clicked => { Theme.dark = true; }
+                    }
+                    Text {
+                        x: 16px;
+                        y: 102px;
+                        text: "切换后立即生效";
+                        font-size: 12px;
+                        color: Theme.text3;
+                    }
+                    Rectangle {
+                        x: 16px;
+                        y: 130px;
+                        width: 198px;
+                        height: 1px;
+                        background: Theme.line;
+                    }
+                    Text {
+                        x: 16px;
+                        y: 144px;
+                        text: "开机自启动";
+                        font-size: 14px;
+                        font-weight: 600;
+                        color: Theme.text;
+                    }
+                    Toggle {
+                        x: 174px;
+                        y: 142px;
+                        checked: root.autostart-on;
+                        toggled => { root.autostart-changed(!root.autostart-on); }
+                    }
+                    Text {
+                        x: 16px;
+                        y: 168px;
+                        text: "登录系统后自动运行";
+                        font-size: 12px;
+                        color: Theme.text3;
+                    }
+                    Rectangle {
+                        x: 16px;
+                        y: 198px;
+                        width: 198px;
+                        height: 1px;
+                        background: Theme.line;
+                    }
+                    Text {
+                        x: 16px;
+                        y: 208px;
+                        text: "从备份恢复";
+                        font-size: 14px;
+                        font-weight: 600;
+                        color: Theme.text;
+                    }
+                    if root.backup-names.length == 0 : Text {
+                        x: 16px;
+                        y: 234px;
+                        width: 198px;
+                        text: "暂无备份，点击顶栏「备份」生成";
+                        font-size: 12px;
+                        color: Theme.text3;
+                        wrap: word-wrap;
+                    }
+                    VerticalLayout {
+                        x: 16px;
+                        y: 234px;
+                        width: 198px;
+                        spacing: 4px;
+                        for name[index] in root.backup-names : Rectangle {
+                            height: 26px;
+                            border-radius: 6px;
+                            background: restore-area.has-hover ? Theme.hover : transparent;
+                            Text {
+                                x: 8px;
+                                width: parent.width - 16px;
+                                height: parent.height;
+                                text: name;
+                                font-size: 12px;
+                                color: Theme.text2;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                            restore-area := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.settings-open = false;
+                                    root.restore-backup(index);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 确认对话框 ──
+            if root.dialog != "" : Rectangle {
+                width: 100%;
+                height: 100%;
+                background: Theme.scrim;
+                TouchArea { }
+                Rectangle {
+                    x: (parent.width - 340px) / 2;
+                    y: (parent.height - 200px) / 2;
+                    width: 340px;
+                    height: 200px;
+                    border-radius: 10px;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    background: Theme.surface;
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Rectangle {
+                                width: 32px;
+                                height: 32px;
+                                border-radius: 16px;
+                                background: root.dialog == "delete" || root.dialog == "quit" ? Theme.danger-bg : Theme.ok-bg;
+                                horizontal-stretch: 0;
+                                NamedIcon {
+                                    icon-name: root.dialog == "delete" ? "trash-danger" : root.dialog == "quit" ? "power-text2" : "check-ok";
+                                    s: 16px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                            Text {
+                                text: root.dialog-title;
+                                font-size: 15px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
+                            }
+                        }
+                        Text {
+                            text: root.dialog-message;
+                            font-size: 13px;
+                            color: Theme.text2;
+                            wrap: word-wrap;
+                            vertical-stretch: 1;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: end;
+                            Btn {
+                                btn-height: 32px;
+                                pad-x: 16px;
+                                label: "取消";
+                                clicked => { root.dialog-cancel(); }
+                            }
+                            Btn {
+                                btn-height: 32px;
+                                pad-x: 16px;
+                                primary: root.dialog != "delete" && root.dialog != "quit";
+                                danger: root.dialog == "delete";
+                                label: root.dialog == "delete" ? "删除" : (root.dialog == "quit" ? "退出" : (root.dialog == "restore" ? "恢复" : "放弃修改"));
+                                clicked => { root.dialog-confirm(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,52 @@
+// 设计令牌来自设计稿《桌面提醒 新版 UI 设计V2》脚本里的 light / dark 两组变量，
+// 数值逐条照抄；深浅两套只在设置里切换，不随系统变化。
+export global Theme {
+    in-out property <bool> dark: false;
+
+    out property <color> bg: dark ? #12161B : #F2F4F6;
+    out property <color> surface: dark ? #1A2027 : #FFFFFF;
+    out property <color> sub: dark ? #161B21 : #F7F9FA;
+    out property <color> input: dark ? #12161B : #FFFFFF;
+    out property <color> line: dark ? #29313A : #E1E6EB;
+    out property <color> line2: dark ? #3B4652 : #C9D1D9;
+    out property <color> text: dark ? #E8EDF2 : #16212B;
+    out property <color> text2: dark ? #B6C0CA : #46535F;
+    out property <color> text3: dark ? #8E9BA8 : #667583;
+    out property <color> ph: dark ? #6D7A87 : #8795A1;
+    out property <color> pri: dark ? #3CC4B3 : #0B6B63;
+    out property <color> pri-h: dark ? #5ED6C7 : #095A54;
+    out property <color> on-pri: dark ? #06211E : #FFFFFF;
+    out property <color> pri-text: dark ? #5ED6C7 : #0B6B63;
+    out property <color> pri-tint: dark ? #12332F : #E8F3F1;
+    out property <color> pri-line: dark ? #1F564F : #BCDAD5;
+    out property <color> warn-bg: dark ? #33270E : #FFF7E6;
+    out property <color> warn-line: dark ? #6B5018 : #F1D9A0;
+    out property <color> warn-text: dark ? #F6C766 : #7A4A00;
+    out property <color> warn-ic: dark ? #F2B13C : #B7791F;
+    out property <color> ok: dark ? #47CD89 : #067647;
+    out property <color> ok-bg: dark ? #0F3324 : #ECFDF3;
+    out property <color> danger: dark ? #F97066 : #B42318;
+    out property <color> danger-bg: dark ? #3A1B1A : #FEF3F2;
+    out property <color> danger-line: dark ? #7A2B27 : #FDA29B;
+    out property <color> hover: dark ? #222A33 : #F3F6F8;
+    out property <color> seg: dark ? #12161B : #EEF1F4;
+    out property <color> seg-on: dark ? #2A333D : #FFFFFF;
+    out property <color> ring: #122B2830;
+    out property <color> scrim: #28323C66;
+
+    // 标题栏是窗口固定的深色条，深浅主题都不变。
+    out property <color> titlebar: #25282D;
+    out property <color> titlebar-ink: #C9CED4;
+    out property <color> titlebar-icon: #9AA2AB;
+    out property <color> titlebar-hover: #FFFFFF1A;
+
+    // Tooltip 与托盘菜单在设计稿里是固定配色，不跟随主题。
+    out property <color> tip-bg: #1F2933;
+    out property <color> tip-ink: #FFFFFF;
+    out property <color> tip-sub: #D0D7DE;
+    out property <color> menu-line: #EEF1F4;
+    out property <color> menu-border: #D0D5DB;
+    out property <color> menu-ink: #2B3844;
+    out property <color> menu-pri: #0B5A54;
+    out property <color> menu-pri-bg: #E8F3F1;
+}

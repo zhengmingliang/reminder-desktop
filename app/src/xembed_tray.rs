@@ -17,6 +17,7 @@ use x11rb::protocol::xproto::{
     CreateWindowAux, EventMask, ImageFormat, PropMode, WindowClass, CLIENT_MESSAGE_EVENT,
 };
 use x11rb::protocol::Event;
+use x11rb::protocol::randr::ConnectionExt as XrandrConnectionExt;
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -36,6 +37,12 @@ pub struct TrayMenuAnchor {
     pub icon_h: i32,
     pub screen_w: i32,
     pub screen_h: i32,
+    /// Bounds of the monitor containing the icon in virtual-desktop coordinates.
+    pub monitor_x: i32,
+    pub monitor_y: i32,
+    pub monitor_w: i32,
+    pub monitor_h: i32,
+    pub monitor_scale_milli: u32,
 }
 
 const ICON: u16 = 22;
@@ -358,6 +365,27 @@ fn menu_anchor(
 ) -> TrayMenuAnchor {
     let screen = &conn.setup().roots[screen_num];
     let (icon_x, icon_y, icon_w, icon_h) = icon_rect(conn, screen.root, window);
+    let monitors = randr_monitors(conn, screen.root, screen.width_in_pixels, screen.height_in_pixels);
+    let mut anchor = TrayMenuAnchor {
+        pointer_x: event_x,
+        pointer_y: event_y,
+        icon_x,
+        icon_y,
+        icon_w,
+        icon_h,
+        screen_w: i32::from(screen.width_in_pixels),
+        screen_h: i32::from(screen.height_in_pixels),
+        monitor_x: 0,
+        monitor_y: 0,
+        monitor_w: 0,
+        monitor_h: 0,
+        monitor_scale_milli: 1000,
+    };
+    anchor = anchor_on_monitor(anchor, &monitors);
+    if anchor.monitor_w <= 0 || anchor.monitor_h <= 0 {
+        anchor.monitor_w = i32::from(screen.width_in_pixels);
+        anchor.monitor_h = i32::from(screen.height_in_pixels);
+    }
     let (pointer_x, pointer_y) = conn
         .query_pointer(window)
         .ok()
@@ -365,15 +393,81 @@ fn menu_anchor(
         .filter(|pointer| pointer.same_screen)
         .map(|pointer| (i32::from(pointer.root_x), i32::from(pointer.root_y)))
         .unwrap_or((event_x, event_y));
-    TrayMenuAnchor {
-        pointer_x,
-        pointer_y,
-        icon_x,
-        icon_y,
-        icon_w,
-        icon_h,
-        screen_w: i32::from(screen.width_in_pixels),
-        screen_h: i32::from(screen.height_in_pixels),
+    anchor.pointer_x = pointer_x;
+    anchor.pointer_y = pointer_y;
+    anchor
+}
+
+fn randr_monitors(
+    conn: &RustConnection,
+    root: u32,
+    screen_w: u16,
+    screen_h: u16,
+) -> Vec<(i32, i32, i32, i32, u32)> {
+    let monitors = conn
+        .randr_get_monitors(root, true)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map(|reply| {
+            reply
+                .monitors
+                .into_iter()
+                .filter(|monitor| monitor.width > 0 && monitor.height > 0)
+                .map(|monitor| {
+                    (
+                        i32::from(monitor.x),
+                        i32::from(monitor.y),
+                        i32::from(monitor.width),
+                        i32::from(monitor.height),
+                        monitor_scale_milli(
+                            monitor.width,
+                            monitor.height,
+                            monitor.width_in_millimeters,
+                            monitor.height_in_millimeters,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if monitors.is_empty() {
+        return vec![(0, 0, i32::from(screen_w), i32::from(screen_h), 1000)];
+    }
+    let screen_bounds = (0, 0, i32::from(screen_w), i32::from(screen_h));
+    let mut monitors: Vec<_> = monitors
+        .into_iter()
+        .filter_map(|(x, y, w, h, scale)| {
+            let left = x.max(screen_bounds.0);
+            let top = y.max(screen_bounds.1);
+            let right = x.saturating_add(w).min(screen_bounds.0 + screen_bounds.2);
+            let bottom = y.saturating_add(h).min(screen_bounds.1 + screen_bounds.3);
+            (right > left && bottom > top).then_some((left, top, right - left, bottom - top, scale))
+        })
+        .collect();
+    if monitors.is_empty() {
+        vec![screen_bounds_with_scale(screen_w, screen_h)]
+    } else {
+        monitors.sort_by_key(|(x, y, _, _, _)| (*y, *x));
+        monitors
+    }
+}
+
+fn screen_bounds_with_scale(screen_w: u16, screen_h: u16) -> (i32, i32, i32, i32, u32) {
+    (0, 0, i32::from(screen_w), i32::from(screen_h), 1000)
+}
+
+fn monitor_scale_milli(width: u16, height: u16, width_mm: u32, height_mm: u32) -> u32 {
+    if width_mm == 0 || height_mm == 0 {
+        return 1000;
+    }
+    let pixels_per_mm = (f64::from(width) * f64::from(height)
+        / (f64::from(width_mm) * f64::from(height_mm)))
+        .sqrt();
+    let scale = ((pixels_per_mm * (12.0 * 25.4 / 96.0)).round() / 12.0).max(1.0);
+    if scale.is_finite() && scale <= 20.0 {
+        (scale * 1000.0).round() as u32
+    } else {
+        1000
     }
 }
 
@@ -400,40 +494,75 @@ fn icon_rect(conn: &RustConnection, root: u32, window: u32) -> (i32, i32, i32, i
 
 /// 托盘菜单的逻辑尺寸，和设计稿一致（264 宽）。菜单窗口和定位共用这两个值。
 pub const MENU_W: i32 = 264;
-pub const MENU_H: i32 = 256;
+pub const MENU_H: i32 = 292;
 
-/// 菜单贴着图标上沿，右边缘和图标对齐，并留在虚拟屏幕里。
+/// Select the monitor containing the tray icon, in virtual-desktop physical coordinates.
+pub fn anchor_on_monitor(
+    mut anchor: TrayMenuAnchor,
+    monitors: &[(i32, i32, i32, i32, u32)],
+) -> TrayMenuAnchor {
+    let (point_x, point_y) = if anchor.icon_w > 0 && anchor.icon_h > 0 {
+        (
+            anchor.icon_x.saturating_add(anchor.icon_w / 2),
+            anchor.icon_y.saturating_add(anchor.icon_h / 2),
+        )
+    } else {
+        (anchor.pointer_x, anchor.pointer_y)
+    };
+    if let Some(&(x, y, w, h, scale_milli)) = monitors.iter().find(|&&(x, y, w, h, _)| {
+        w > 0 && h > 0 && point_x >= x && point_x < x.saturating_add(w)
+            && point_y >= y && point_y < y.saturating_add(h)
+    }) {
+        anchor.monitor_x = x;
+        anchor.monitor_y = y;
+        anchor.monitor_w = w;
+        anchor.monitor_h = h;
+        anchor.monitor_scale_milli = scale_milli.max(1);
+    }
+    anchor
+}
+
+/// Position the menu above the icon on its own monitor; only use the virtual root as fallback.
 pub fn tray_menu_origin(anchor: &TrayMenuAnchor, menu_w: i32, menu_h: i32) -> (i32, i32) {
     let gap = 6;
+    let (bounds_x, bounds_y, bounds_w, bounds_h) = if anchor.monitor_w > 0 && anchor.monitor_h > 0 {
+        (anchor.monitor_x, anchor.monitor_y, anchor.monitor_w, anchor.monitor_h)
+    } else {
+        (0, 0, anchor.screen_w, anchor.screen_h)
+    };
     let (mut x, mut y) = if anchor.icon_w > 0 && anchor.icon_h > 0 {
         let right = anchor.icon_x.saturating_add(anchor.icon_w);
         let above = anchor.icon_y.saturating_sub(menu_h).saturating_sub(gap);
-        let below = anchor
-            .icon_y
-            .saturating_add(anchor.icon_h)
-            .saturating_add(gap);
-        let y = if above >= 0 { above } else { below };
+        let below = anchor.icon_y.saturating_add(anchor.icon_h).saturating_add(gap);
+        let bottom = bounds_y.saturating_add(bounds_h);
+        let y = if above >= bounds_y {
+            above
+        } else if below.saturating_add(menu_h) <= bottom {
+            below
+        } else if anchor.icon_y.saturating_sub(bounds_y) >= bottom.saturating_sub(anchor.icon_y) {
+            above
+        } else {
+            below
+        };
         (right.saturating_sub(menu_w), y)
     } else {
         let above = anchor.pointer_y.saturating_sub(menu_h).saturating_sub(gap);
-        let y = if above >= 0 {
-            above
-        } else {
-            anchor.pointer_y.saturating_add(gap)
-        };
+        let below = anchor.pointer_y.saturating_add(gap);
+        let bottom = bounds_y.saturating_add(bounds_h);
+        let y = if above >= bounds_y { above } else if below.saturating_add(menu_h) <= bottom { below } else { above };
         (anchor.pointer_x, y)
     };
-    if anchor.screen_w > 0 {
-        let max_x = anchor.screen_w.saturating_sub(menu_w).max(0);
-        x = x.clamp(0, max_x);
-    } else if x < 0 {
-        x = 0;
+    if bounds_w > 0 {
+        let max_x = bounds_x.saturating_add(bounds_w).saturating_sub(menu_w).max(bounds_x);
+        x = x.clamp(bounds_x, max_x);
+    } else {
+        x = x.max(bounds_x);
     }
-    if anchor.screen_h > 0 {
-        let max_y = anchor.screen_h.saturating_sub(menu_h).max(0);
-        y = y.clamp(0, max_y);
-    } else if y < 0 {
-        y = 0;
+    if bounds_h > 0 {
+        let max_y = bounds_y.saturating_add(bounds_h).saturating_sub(menu_h).max(bounds_y);
+        y = y.clamp(bounds_y, max_y);
+    } else {
+        y = y.max(bounds_y);
     }
     (x, y)
 }
@@ -523,7 +652,8 @@ fn intern(conn: &RustConnection, name: &str) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bell_image, bell_shape, dock, free_pixmap, paint, tray_menu_origin, tile_shape,
+        anchor_on_monitor, bell_image, bell_shape, dock, free_pixmap, monitor_scale_milli, paint,
+        tray_menu_origin, tile_shape,
         TrayMenuAnchor, MENU_H, MENU_W,
     };
     use x11rb::connection::Connection;
@@ -573,11 +703,16 @@ mod tests {
             icon_h: 24,
             screen_w: 4480,
             screen_h: 1600,
+            monitor_x: 1920,
+            monitor_y: 0,
+            monitor_w: 2560,
+            monitor_h: 1600,
+            monitor_scale_milli: 1000,
         };
         let (x, y) = tray_menu_origin(&anchor, MENU_W, MENU_H);
         assert!(x > 3000, "x={x}");
+        assert!(x >= 1920 && x + MENU_W <= 4480, "x={x}");
         assert!(y >= 0 && y + MENU_H <= 1568, "y={y}");
-        assert!(x + MENU_W <= 4480);
         assert!(y + MENU_H <= 1600);
     }
 
@@ -690,8 +825,76 @@ mod tests {
             icon_h: 24,
             screen_w: 1920,
             screen_h: 1080,
+            monitor_x: 0,
+            monitor_y: 0,
+            monitor_w: 1920,
+            monitor_h: 1080,
+            monitor_scale_milli: 1000,
         };
         let (x, y) = tray_menu_origin(&anchor, MENU_W, MENU_H);
         assert_eq!((x, y), (0, 30));
+    }
+
+    #[test]
+    fn menu_uses_the_monitor_that_contains_the_tray_icon() {
+        let anchor = TrayMenuAnchor {
+            pointer_x: 1898,
+            pointer_y: 1050,
+            icon_x: 1888,
+            icon_y: 1040,
+            icon_w: 24,
+            icon_h: 24,
+            screen_w: 4480,
+            screen_h: 1600,
+            monitor_x: 0,
+            monitor_y: 0,
+            monitor_w: 0,
+            monitor_h: 0,
+            monitor_scale_milli: 1000,
+        };
+        let monitors = [
+            (0, 0, 1920, 1080, 1000),
+            (1920, 0, 2560, 1600, 2000),
+        ];
+        let anchor = anchor_on_monitor(anchor, &monitors);
+        assert_eq!((anchor.monitor_x, anchor.monitor_y), (0, 0));
+        assert_eq!(anchor.monitor_scale_milli, 1000);
+        let (x, y) = tray_menu_origin(&anchor, MENU_W, MENU_H);
+        assert!(x >= 0 && x + MENU_W <= 1920);
+        assert!(y >= 0 && y + MENU_H <= 1080);
+
+        let laptop_anchor = TrayMenuAnchor {
+            pointer_x: 4000,
+            pointer_y: 1500,
+            icon_x: 4400,
+            icon_y: 1550,
+            icon_w: 24,
+            icon_h: 24,
+            screen_w: 4480,
+            screen_h: 1600,
+            monitor_x: 0,
+            monitor_y: 0,
+            monitor_w: 0,
+            monitor_h: 0,
+            monitor_scale_milli: 1000,
+        };
+        let laptop_anchor = anchor_on_monitor(laptop_anchor, &monitors);
+        assert_eq!(laptop_anchor.monitor_x, 1920);
+        assert_eq!(laptop_anchor.monitor_scale_milli, 2000);
+        let scale = laptop_anchor.monitor_scale_milli as f32 / 1000.0;
+        let (x, y) = tray_menu_origin(
+            &laptop_anchor,
+            (MENU_W as f32 * scale).round() as i32,
+            (MENU_H as f32 * scale).round() as i32,
+        );
+        assert!(x >= 1920 && x + 528 <= 4480);
+        assert!(y >= 0 && y + 584 <= 1600);
+    }
+
+    #[test]
+    fn monitor_scale_matches_winit_randr_dpi_quantization() {
+        assert_eq!(monitor_scale_milli(1920, 1080, 527, 296), 1000);
+        assert_eq!(monitor_scale_milli(2560, 1600, 345, 215), 2000);
+        assert_eq!(monitor_scale_milli(100, 100, 0, 0), 1000);
     }
 }

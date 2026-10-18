@@ -1,0 +1,523 @@
+// 通用控件：尺寸与配色全部来自设计稿 V2 的组件规格。
+// 图标通过 icon-name 选字形，深浅切换交给 icons.slint。
+
+import { Theme } from "theme.slint";
+import {
+    IcBellPri, IcBellOnPri, IcCheckOnPri, IcClockPri, IcClockMuted, IcClockWarn,
+    IcPlusPri, IcPlusInk, IcMinusInk, IcDownloadText2, IcTrayDownText2, IcPowerText2,
+    IcSearchPh, IcRepeatPri, IcCheckCircleOk, IcPauseCirclePh, IcChevronLeftText2,
+    IcChevronDownText3, IcChevronRightText3, IcCalendarText3, IcCheckOk, IcTrashDanger,
+    IcExternalLinkText2, IcMenuWindow, IcMenuWindowPri, IcMenuPlus, IcMenuClock,
+    IcMenuDownload, IcMenuGear, IcMenuPower, IcTitleMinus, IcTitleSquare, IcTitleClose,
+} from "icons.slint";
+
+// 按名字取字形；所有图标等比显示在 s × s 的方框里。
+export component NamedIcon inherits Rectangle {
+    in property <string> icon-name;
+    in property <length> s: 16px;
+    width: s;
+    height: s;
+    if root.icon-name == "bell-pri" : IcBellPri { s: root.s; }
+    if root.icon-name == "bell-on-pri" : IcBellOnPri { s: root.s; }
+    if root.icon-name == "check-on-pri" : IcCheckOnPri { s: root.s; }
+    if root.icon-name == "clock-pri" : IcClockPri { s: root.s; }
+    if root.icon-name == "clock-muted" : IcClockMuted { s: root.s; }
+    if root.icon-name == "clock-warn" : IcClockWarn { s: root.s; }
+    if root.icon-name == "plus-pri" : IcPlusPri { s: root.s; }
+    if root.icon-name == "plus-ink" : IcPlusInk { s: root.s; }
+    if root.icon-name == "minus-ink" : IcMinusInk { s: root.s; }
+    if root.icon-name == "download-text2" : IcDownloadText2 { s: root.s; }
+    if root.icon-name == "tray-down-text2" : IcTrayDownText2 { s: root.s; }
+    if root.icon-name == "power-text2" : IcPowerText2 { s: root.s; }
+    if root.icon-name == "search-ph" : IcSearchPh { s: root.s; }
+    if root.icon-name == "repeat-pri" : IcRepeatPri { s: root.s; }
+    if root.icon-name == "check-circle-ok" : IcCheckCircleOk { s: root.s; }
+    if root.icon-name == "pause-circle-ph" : IcPauseCirclePh { s: root.s; }
+    if root.icon-name == "chevron-left-text2" : IcChevronLeftText2 { s: root.s; }
+    if root.icon-name == "chevron-down-text3" : IcChevronDownText3 { s: root.s; }
+    if root.icon-name == "chevron-right-text3" : IcChevronRightText3 { s: root.s; }
+    if root.icon-name == "calendar-text3" : IcCalendarText3 { s: root.s; }
+    if root.icon-name == "check-ok" : IcCheckOk { s: root.s; }
+    if root.icon-name == "trash-danger" : IcTrashDanger { s: root.s; }
+    if root.icon-name == "external-link-text2" : IcExternalLinkText2 { s: root.s; }
+    if root.icon-name == "menu-window" : IcMenuWindow { s: root.s; }
+    if root.icon-name == "menu-window-pri" : IcMenuWindowPri { s: root.s; }
+    if root.icon-name == "menu-plus" : IcMenuPlus { s: root.s; }
+    if root.icon-name == "menu-clock" : IcMenuClock { s: root.s; }
+    if root.icon-name == "menu-download" : IcMenuDownload { s: root.s; }
+    if root.icon-name == "menu-gear" : IcMenuGear { s: root.s; }
+    if root.icon-name == "menu-power" : IcMenuPower { s: root.s; }
+    if root.icon-name == "title-minus" : IcTitleMinus { s: root.s; }
+    if root.icon-name == "title-square" : IcTitleSquare { s: root.s; }
+    if root.icon-name == "title-close" : IcTitleClose { s: root.s; }
+}
+
+// 32px 图标按钮：悬停描边加浅底；danger 时悬停转危险色；Tooltip 在下方居中。
+export component ToolBtn inherits Rectangle {
+    in property <string> icon-name;
+    in property <length> icon-size: 17px;
+    in property <string> tip-title;
+    in property <string> tip-body;
+    in property <bool> danger: false;
+    in property <color> ink: Theme.text2;
+    callback clicked();
+
+    property <bool> show-tip: area.has-hover && root.tip-title != "";
+
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: area.has-hover ? (root.danger ? Theme.danger-line : Theme.line2) : transparent;
+    background: area.has-hover ? (root.danger ? Theme.danger-bg : Theme.hover) : transparent;
+
+    NamedIcon {
+        icon-name: root.icon-name;
+        s: root.icon-size;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    if show-tip : Rectangle {
+        x: (parent.width - 208px) / 2;
+        y: parent.height + 8px;
+        width: 208px;
+        border-radius: 6px;
+        background: Theme.tip-bg;
+        VerticalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 2px;
+            Text {
+                text: root.tip-title;
+                color: Theme.tip-ink;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            Text {
+                text: root.tip-body;
+                color: Theme.tip-sub;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// 次要/主要/透明按钮：高 32（可改），圆角 6，横向内边距 16。
+export component Btn inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> transparent: false;
+    in property <bool> bold: false;
+    in property <color> ink: Theme.text;
+    in property <length> btn-height: 32px;
+    in property <length> pad-x: 16px;
+    in property <length> font-size: 13px;
+    callback clicked();
+
+    property <length> label-width: ceil(label-text.preferred-width / 1px) * 1px;
+    label-text := Text {
+        visible: false;
+        text: root.label;
+        font-size: root.font-size;
+        font-weight: root.bold ? 600 : 500;
+    }
+
+    width: 2 * root.pad-x + root.label-width;
+    height: btn-height;
+    border-radius: 6px;
+    border-width: root.primary || root.transparent ? 0px : 1px;
+    border-color: root.danger ? Theme.danger-line : Theme.line2;
+    background: root.primary
+        ? (area.has-hover ? Theme.pri-h : Theme.pri)
+        : root.transparent
+            ? (area.has-hover ? Theme.hover : #00000000)
+            : (area.has-hover ? Theme.hover : Theme.surface);
+
+    Text {
+        x: root.pad-x;
+        width: parent.width - 2 * root.pad-x;
+        height: parent.height;
+        text: root.label;
+        color: root.primary ? Theme.on-pri : root.danger ? Theme.danger : root.ink;
+        font-size: root.font-size;
+        font-weight: root.bold ? 600 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// 图标 + 文案按钮（删除、打开主窗口、知道了旁的操作）。
+export component IconTextBtn inherits Rectangle {
+    in property <string> icon-name;
+    in property <length> icon-size: 15px;
+    in property <string> label;
+    in property <color> ink: Theme.text2;
+    in property <color> line-color: Theme.line2;
+    in property <bool> filled: false;
+    in property <bool> transparent: false;
+    in property <length> btn-height: 34px;
+    in property <length> pad-x: 12px;
+    callback clicked();
+
+    property <length> label-width: ceil(icon-label-text.preferred-width / 1px) * 1px;
+    icon-label-text := Text {
+        visible: false;
+        text: root.label;
+        font-size: 13px;
+        font-weight: 500;
+    }
+
+    width: 2 * root.pad-x + root.icon-size + 6px + root.label-width;
+    height: btn-height;
+    border-radius: 6px;
+    border-width: root.filled || root.transparent ? 0px : 1px;
+    border-color: root.line-color;
+    background: root.filled
+        ? (area.has-hover ? Theme.pri-h : Theme.pri)
+        : (area.has-hover ? Theme.hover : #00000000);
+
+    HorizontalLayout {
+        padding-left: root.pad-x;
+        padding-right: root.pad-x;
+        spacing: 6px;
+        alignment: center;
+        NamedIcon {
+            icon-name: root.icon-name;
+            s: root.icon-size;
+        }
+        Text {
+            text: root.label;
+            color: root.filled ? Theme.on-pri : root.ink;
+            font-size: 13px;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// 胶囊 chip：pill 时圆角 13（快速添加行），否则圆角 6。
+export component Chip inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> dashed: false;
+    in property <bool> pill: false;
+    in property <length> chip-height: 28px;
+    in property <length> pad-x: 12px;
+    in property <length> font-size: 13px;
+    callback clicked();
+
+    property <length> label-width: ceil(chip-text.preferred-width / 1px) * 1px;
+    chip-text := Text {
+        visible: false;
+        text: root.label;
+        font-size: root.font-size;
+        font-weight: root.active ? 600 : root.dashed ? 500 : 400;
+    }
+
+    height: chip-height;
+    width: 2 * root.pad-x + root.label-width;
+    border-radius: pill ? 13px : 6px;
+    border-width: 1px;
+    border-color: root.active ? Theme.pri-text : Theme.line2;
+    background: root.active ? Theme.pri-tint : (area.has-hover ? Theme.hover : Theme.surface);
+
+    Text {
+        x: root.pad-x;
+        width: parent.width - 2 * root.pad-x;
+        height: parent.height;
+        text: root.label;
+        color: root.active || root.dashed ? Theme.pri-text : Theme.text;
+        font-size: root.font-size;
+        font-weight: root.active ? 600 : root.dashed ? 500 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// 输入框：可带前置图标、可用等宽字体、invalid 时红描边、聚焦时 3px 主色外圈。
+export component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder: "";
+    in property <string> icon-name: "";
+    in property <bool> multiline: false;
+    in property <bool> invalid: false;
+    in property <bool> mono: false;
+    in property <string> mono-family: "JetBrains Mono";
+    in property <bool> read-only: false;
+    in property <length> field-height: 32px;
+    in property <length> radius: 6px;
+    in property <length> font-size: 14px;
+    in property <length> pad-left: 12px;
+    in property <length> pad-right: 12px;
+    in property <length> icon-size: 16px;
+    in property <length> icon-x: 10px;
+    callback edited(string);
+
+    property <bool> focused: field-a.has-focus || field-b.has-focus;
+    property <length> text-x: root.icon-name == "" ? root.pad-left : 34px;
+
+    public function take-focus() {
+        if root.mono { field-b.focus(); } else { field-a.focus(); }
+    }
+
+    height: field-height;
+    border-radius: radius;
+    border-width: 1px;
+    border-color: root.invalid ? Theme.danger : (root.focused ? Theme.pri-text : Theme.line2);
+    background: Theme.input;
+
+    if root.focused : Rectangle {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: parent.radius + 3px;
+        border-width: 3px;
+        border-color: Theme.ring;
+        background: transparent;
+    }
+
+    if root.icon-name != "" : NamedIcon {
+        icon-name: root.icon-name;
+        s: root.icon-size;
+        x: root.icon-x;
+        y: (parent.height - self.height) / 2;
+    }
+
+    field-a := TextInput {
+        x: root.text-x;
+        y: 6px;
+        width: parent.width - self.x - root.pad-right;
+        height: parent.height - 12px;
+        visible: !root.mono;
+        vertical-alignment: root.multiline ? top : center;
+        font-size: root.font-size;
+        color: Theme.text;
+        single-line: !root.multiline;
+        wrap: root.multiline ? word-wrap : no-wrap;
+        read-only: root.read-only;
+        text <=> root.text;
+        edited => { root.edited(self.text); }
+    }
+
+    field-b := TextInput {
+        x: root.text-x;
+        y: 6px;
+        width: parent.width - self.x - root.pad-right;
+        height: parent.height - 12px;
+        visible: root.mono;
+        vertical-alignment: center;
+        font-size: root.font-size;
+        font-family: root.mono-family;
+        color: Theme.text;
+        single-line: true;
+        read-only: root.read-only;
+        text <=> root.text;
+        edited => { root.edited(self.text); }
+    }
+
+    if root.text == "" : Text {
+        x: root.text-x;
+        y: 6px;
+        width: parent.width - self.x - root.pad-right;
+        height: parent.height - 12px;
+        text: root.placeholder;
+        color: Theme.ph;
+        font-size: root.font-size;
+        vertical-alignment: root.multiline ? top : center;
+        overflow: elide;
+    }
+}
+
+// 开关：40 × 22，圆点 18。
+export component Toggle inherits Rectangle {
+    in-out property <bool> checked: false;
+    callback toggled();
+
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: root.checked ? Theme.pri : Theme.line2;
+
+    Rectangle {
+        x: root.checked ? 20px : 2px;
+        y: 2px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: Theme.on-pri;
+        animate x { duration: 120ms; }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+}
+
+// 复选框：18 × 18、圆角 4。
+export component CheckBox inherits Rectangle {
+    in-out property <bool> checked: false;
+    callback toggled();
+
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border-width: root.checked ? 0px : 1.5px;
+    border-color: Theme.ph;
+    background: root.checked ? Theme.pri : Theme.surface;
+
+    if root.checked : NamedIcon {
+        icon-name: "check-on-pri";
+        s: 12px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+}
+
+// 分段控件里的一个选项：高 28，选中白底 600。
+export component SegBtn inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked();
+
+    height: 28px;
+    border-radius: 6px;
+    background: root.active ? Theme.seg-on : transparent;
+
+    Text {
+        width: 100%;
+        height: 100%;
+        text: root.label;
+        color: root.active ? Theme.pri-text : Theme.text2;
+        font-size: 13px;
+        font-weight: root.active ? 600 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// 语义提示条：主色浅底 + 图标 + 文案。
+export component HintBox inherits Rectangle {
+    in property <string> icon-name: "clock-pri";
+    in property <string> text;
+    border-radius: 6px;
+    background: Theme.pri-tint;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 8px;
+        NamedIcon {
+            icon-name: root.icon-name;
+            s: 14px;
+        }
+        Text {
+            text: root.text;
+            color: Theme.pri-text;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// 字段错误文案：12px 危险色。
+export component ErrorText inherits Text {
+    color: Theme.danger;
+    font-size: 12px;
+    wrap: word-wrap;
+}
+
+// 卡片：圆角 10、1px 描边。
+export component Card inherits Rectangle {
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.line;
+    background: Theme.surface;
+}
+
+// 语义徽标：高 20、全圆角、12px。
+export component Badge inherits Rectangle {
+    in property <string> label;
+    in property <string> kind: "neutral"; // ok / warn / pri / neutral
+    in property <length> badge-height: 20px;
+
+    // 普通 Rectangle 不会从子元素推导首选宽度，这里显式按文案测宽。
+    property <length> badge-width: ceil(badge-measure.preferred-width / 1px) * 1px + 16px;
+    badge-measure := Text {
+        visible: false;
+        text: root.label;
+        font-size: 12px;
+        font-weight: 500;
+    }
+
+    width: badge-width;
+    height: badge-height;
+    border-radius: badge-height / 2;
+    background: root.kind == "ok"
+        ? Theme.ok-bg
+        : root.kind == "warn"
+            ? Theme.warn-bg
+            : root.kind == "pri"
+                ? Theme.pri-tint
+                : Theme.seg;
+
+    Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        text: root.label;
+        color: root.kind == "ok" ? Theme.ok : root.kind == "warn" ? Theme.warn-text : root.kind == "pri" ? Theme.pri-text : Theme.text2;
+        font-size: 12px;
+        font-weight: 500;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        overflow: elide;
+    }
+}
