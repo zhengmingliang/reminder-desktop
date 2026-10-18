@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use chrono::{Local, Offset};
+use chrono::{DateTime, Local, Offset};
 use reminder_core::validate::arm_snooze;
 use reminder_core::{
     check_sound_file, format_point, inspect, millis_to_local, Draft, Kind, Reminder, Report,
@@ -58,6 +58,8 @@ struct Session {
     popup_seq: Cell<u64>,
     sound_cache: RefCell<(String, String)>,
     reveal_errors: Cell<bool>,
+    backups: RefCell<Vec<PathBuf>>,
+    pending_restore: RefCell<Option<PathBuf>>,
 }
 
 pub fn run(smoke: bool) -> Result<(), String> {
@@ -114,6 +116,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
     };
     ui.set_ui_font(ui_font().into());
     ui.set_mono_font(mono_font().into());
+    ui.set_autostart_on(crate::autostart::is_enabled());
 
     let rows = Rc::new(VecModel::<ReminderRow>::default());
     let dirs = Rc::new(VecModel::<DirEntry>::default());
@@ -143,6 +146,8 @@ pub fn run(smoke: bool) -> Result<(), String> {
         popup_seq: Cell::new(1),
         sound_cache: RefCell::new((String::new(), String::new())),
         reveal_errors: Cell::new(false),
+        backups: RefCell::new(Vec::new()),
+        pending_restore: RefCell::new(None),
     });
 
     if let Some(reason) = lock_store(&store).persist_block_reason().map(str::to_string) {
@@ -153,6 +158,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
     wire(&ui, &session);
     session.show_blank();
     session.refresh_list();
+    session.refresh_backups();
     session.tick_clock();
 
     let (notice_tx, notice_rx) = mpsc::channel::<Vec<Notice>>();
@@ -176,7 +182,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
         let commands: Vec<TrayCommand> = tray_rx_timer.borrow_mut().try_iter().collect();
         for command in commands {
             match command {
-                TrayCommand::Show => timed.show_main(),
+                TrayCommand::Show => timed.toggle_main(),
                 TrayCommand::Menu(anchor) => timed.open_tray_menu(anchor),
             }
         }
@@ -209,11 +215,10 @@ pub fn run(smoke: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn wire(ui: &MainWindow, session: &Rc<Session>) {
-    ui.window().on_close_requested({
+fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_requested({
         let session = session.clone();
         move || {
-            session.background_tip();
+            session.update_tip();
             session.log.log("INFO", "主窗口关闭，转入后台");
             slint::CloseRequestResponse::HideWindow
         }
@@ -254,6 +259,10 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {
         let session = session.clone();
         move || session.hide_main()
     });
+    ui.on_autostart_changed({
+        let session = session.clone();
+        move |on| session.set_autostart(on)
+    });
     ui.on_quit({
         let session = session.clone();
         move || {
@@ -264,6 +273,10 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {
     ui.on_backup({
         let session = session.clone();
         move || session.backup()
+    });
+    ui.on_restore_backup({
+        let session = session.clone();
+        move |index| session.ask_restore(index)
     });
     ui.on_preview_sound({
         let session = session.clone();
@@ -346,12 +359,21 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {
             let session = session.clone();
             move || session.show_main()
         });
+        tray.on_toggle_window({
+            let session = session.clone();
+            move || session.toggle_main()
+        });
+        tray.on_new_reminder({
+            let session = session.clone();
+            move || session.new_reminder_from_tray()
+        });
+        tray.on_backup({
+            let session = session.clone();
+            move || session.backup_from_tray()
+        });
         tray.on_quit_app({
             let session = session.clone();
-            move || {
-                session.log.log("INFO", "从托盘退出");
-                let _ = slint::quit_event_loop();
-            }
+            move || session.quit_from_tray()
         });
     }
 }
@@ -384,7 +406,12 @@ impl Session {
 
     fn apply_nav(&self, nav: Nav) {
         match nav {
-            Nav::New => self.show_blank(),
+            Nav::New => {
+                self.show_blank();
+                if let Some(ui) = self.ui.upgrade() {
+                    ui.set_main_view("edit".into());
+                }
+            }
             Nav::Select(id) => self.load_id(&id),
         }
         self.refresh_list();
@@ -606,6 +633,14 @@ impl Session {
             self.delete_loaded();
             return;
         }
+        if kind == "quit" {
+            self.quit();
+            return;
+        }
+        if kind == "restore" {
+            self.restore_backup();
+            return;
+        }
         if kind == "discard" {
             if let Some(nav) = self.pending.borrow_mut().take() {
                 self.apply_nav(nav);
@@ -615,6 +650,7 @@ impl Session {
 
     fn close_dialog(&self) {
         *self.pending.borrow_mut() = None;
+        *self.pending_restore.borrow_mut() = None;
         if let Some(ui) = self.ui.upgrade() {
             ui.set_dialog("".into());
         }
@@ -645,9 +681,82 @@ impl Session {
         }
     }
 
+    fn set_autostart(&self, on: bool) {
+        match crate::autostart::set_enabled(on) {
+            Ok(()) => {
+                if let Some(ui) = self.ui.upgrade() {
+                    ui.set_autostart_on(on);
+                }
+                self.toast(if on { "已开启开机自启动" } else { "已关闭开机自启动" });
+            }
+            Err(error) => {
+                self.log.log("ERROR", &format!("开机自启动设置失败：{error}"));
+                self.toast(&error);
+            }
+        }
+    }
+
     fn backup(&self) {
-        match lock_store(&self.store).backup() {
-            Ok(path) => self.toast(&format!("已备份到 {}", path.display())),
+        // 先释放存储锁，再刷新备份列表（刷新同样需要锁）。
+        let result = lock_store(&self.store).backup();
+        match result {
+            Ok(path) => {
+                self.refresh_backups();
+                self.toast(&format!("已备份到 {}", path.display()));
+            }
+            Err(error) => self.toast(&error),
+        }
+    }
+
+    fn refresh_backups(&self) {
+        let files = lock_store(&self.store).list_backups();
+        let labels: Vec<slint::SharedString> = files
+            .iter()
+            .take(BACKUP_MENU_LIMIT)
+            .map(|path| backup_label(path).into())
+            .collect();
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_backup_names(ModelRc::new(VecModel::from(labels)));
+        }
+        *self.backups.borrow_mut() = files;
+    }
+
+    fn ask_restore(&self, index: i32) {
+        let Some(path) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.backups.borrow().get(index).cloned())
+        else {
+            return;
+        };
+        let label = backup_label(&path);
+        *self.pending_restore.borrow_mut() = Some(path);
+        self.open_dialog(
+            "从这份备份恢复？",
+            &format!("「{label}」会替换当前全部提醒。替换前会先自动备份当前数据。"),
+        );
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_settings_open(false);
+            ui.set_dialog("restore".into());
+        }
+    }
+
+    fn restore_backup(&self) {
+        let Some(path) = self.pending_restore.borrow_mut().take() else {
+            return;
+        };
+        let result = lock_store(&self.store).restore(&path);
+        match result {
+            Ok(count) => {
+                runtime::poke(&self.wake);
+                self.log.log(
+                    "INFO",
+                    &format!("从备份恢复 {count} 条提醒，来源 {}", path.display()),
+                );
+                self.show_blank();
+                self.refresh_list();
+                self.refresh_backups();
+                self.toast(&format!("已恢复 {count} 条提醒，恢复前的数据已另存为备份"));
+            }
             Err(error) => self.toast(&error),
         }
     }
@@ -781,6 +890,7 @@ impl Session {
     }
 
     fn refresh_list(&self) {
+        self.update_tip();
         let Some(ui) = self.ui.upgrade() else {
             return;
         };
@@ -792,8 +902,19 @@ impl Session {
         let fired = store.reminders.iter().filter(|item| bucket(item) == "fired").count();
         let paused = store.reminders.iter().filter(|item| bucket(item) == "paused").count();
         let total = store.reminders.len();
+        let today = now.date_naive();
+        let due_today = store
+            .reminders
+            .iter()
+            .filter(|item| bucket(item) == "pending")
+            .filter(|item| {
+                reminder_core::next_wake(std::slice::from_ref(*item), now)
+                    .is_some_and(|time| time.date_naive() == today)
+            })
+            .count();
         ui.set_tab_all(total.to_string().into());
         ui.set_tab_pending(pending.to_string().into());
+        ui.set_tab_today(due_today.to_string().into());
         ui.set_tab_fired(fired.to_string().into());
         ui.set_tab_paused(paused.to_string().into());
         ui.set_footer_text(format!("共 {total} 条提醒 · 待触发 {pending} 条").into());
@@ -838,7 +959,7 @@ impl Session {
         ui.set_count_text(visible.to_string().into());
     }
 
-    fn show_notices(&self, mut notices: Vec<Notice>) {
+    fn show_notices(self: &Rc<Self>, mut notices: Vec<Notice>) {
         if notices.is_empty() {
             return;
         }
@@ -882,7 +1003,7 @@ impl Session {
         }
     }
 
-    fn open_popup(&self, notice: Notice) {
+    fn open_popup(self: &Rc<Self>, notice: Notice) {
         let popup = match PopupWindow::new() {
             Ok(popup) => popup,
             Err(error) => {
@@ -947,13 +1068,9 @@ impl Session {
             dismiss_popup(&popups, id, false);
             slint::CloseRequestResponse::HideWindow
         });
-        let session = self.ui.clone();
-        popup.on_open_main(move || {
-            if let Some(ui) = session.upgrade() {
-                let _ = ui.show();
-                focus_window(ui.window());
-            }
-        });
+        let session = self.clone();
+        let target = notice.id.clone();
+        popup.on_open_main(move || session.open_reminder(&target));
 
         if let Err(error) = popup.show() {
             self.log.log("ERROR", &format!("无法显示提醒弹窗：{error}"));
@@ -982,28 +1099,126 @@ impl Session {
         if let Some(ui) = self.ui.upgrade() {
             let _ = ui.hide();
         }
-        self.background_tip();
+        self.update_tip();
     }
 
+    /// 托盘左键：窗口可见则隐藏，否则显示并置前。
+    fn toggle_main(&self) {
+        let visible = self.ui.upgrade().is_some_and(|ui| ui.window().is_visible());
+        if visible {
+            self.hide_main();
+        } else {
+            self.show_main();
+        }
+    }
+
+    /// 显示并置前主窗口；已显示时只置前。
     fn show_main(&self) {
+        self.reveal_main();
+        self.close_tray_menu();
+    }
+
+    fn reveal_main(&self) {
         if let Some(ui) = self.ui.upgrade() {
             let _ = ui.show();
             focus_window(ui.window());
             self.refresh_list();
         }
-        self.close_tray_menu();
-        if let Some(tray) = self.tray.borrow().as_ref() {
-            tray.set_tip("桌面提醒正在运行".into());
+    }
+
+    /// 弹窗里的「打开主窗口」：显示主窗口并定位到这条提醒。
+    fn open_reminder(&self, id: &str) {
+        self.reveal_main();
+        if !id.is_empty() {
+            self.request_nav(Nav::Select(id.to_string()));
         }
     }
 
-    fn background_tip(&self) {
-        if let Some(tray) = self.tray.borrow().as_ref() {
-            tray.set_tip("桌面提醒正在后台运行，点击图标可打开".into());
+    fn new_reminder_from_tray(&self) {
+        self.reveal_main();
+        self.request_nav(Nav::New);
+    }
+
+    fn backup_from_tray(&self) {
+        self.reveal_main();
+        self.backup();
+    }
+
+    /// 托盘「退出」与顶栏一致：有待触发提醒时先二次确认。
+    fn quit_from_tray(&self) {
+        let pending = lock_store(&self.store)
+            .reminders
+            .iter()
+            .any(|item| bucket(item) == "pending");
+        if !pending {
+            self.quit();
+            return;
+        }
+        self.reveal_main();
+        self.open_dialog("退出桌面提醒？", "还有待触发的提醒，退出后将不会再按时提醒。");
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_dialog("quit".into());
         }
     }
 
-    fn open_tray_menu(&self, anchor: xembed_tray::TrayMenuAnchor) {
+    fn quit(&self) {
+        self.log.log("INFO", "用户退出");
+        let _ = slint::quit_event_loop();
+    }
+
+    /// 托盘提示：有稍后提醒时显示下次再提醒的时间，否则显示后台运行状态。
+    fn update_tip(&self) {
+        if let Some(tray) = self.tray.borrow().as_ref() {
+            tray.set_tip(self.tip_text().into());
+        }
+    }
+
+    fn tip_text(&self) -> String {
+        let now = Local::now().timestamp_millis();
+        let store = lock_store(&self.store);
+        let next_snooze = store
+            .reminders
+            .iter()
+            .filter_map(|item| item.snooze_until_ms)
+            .filter(|ms| *ms > now)
+            .min();
+        match next_snooze {
+            Some(ms) => format!("稍后提醒将于 {} 再次提醒", millis_to_local(ms).format("%H:%M")),
+            None => "桌面提醒 · 后台运行中".to_string(),
+        }
+    }
+
+    /// 托盘菜单的两行状态：待触发数量，以及下一条提醒。
+    fn tray_status(&self) -> (String, String) {
+        let now = Local::now();
+        let store = lock_store(&self.store);
+        let pending = store
+            .reminders
+            .iter()
+            .filter(|item| bucket(item) == "pending")
+            .count();
+        let status = if pending == 0 {
+            "后台运行中 · 暂无待触发".to_string()
+        } else {
+            format!("后台运行中 · {pending} 条待触发")
+        };
+        let next: Option<(String, DateTime<Local>)> = store
+            .reminders
+            .iter()
+            .filter(|item| bucket(item) == "pending")
+            .filter_map(|item| {
+                reminder_core::next_wake(std::slice::from_ref(item), now)
+                    .map(|time| (item.title.clone(), time))
+            })
+            .min_by_key(|(_, time)| *time);
+        let next_text = match next {
+            Some((title, time)) => format!("下次：{title} · {}", time.format("%H:%M")),
+            None => "下次：暂无提醒".to_string(),
+        };
+        (status, next_text)
+    }
+
+    fn open_tray_menu(self: &Rc<Self>, anchor: xembed_tray::TrayMenuAnchor) {
         self.close_tray_menu();
         TRAY_POPUP.with(|flag| flag.set(true));
         let menu = match TrayMenu::new() {
@@ -1017,15 +1232,25 @@ impl Session {
         };
         TRAY_POPUP.with(|flag| flag.set(false));
         menu.set_ui_font(ui_font().into());
-        let session = self.ui.clone();
-        menu.on_show_main(move || {
-            if let Some(ui) = session.upgrade() {
-                let _ = ui.show();
-                focus_window(ui.window());
-            }
+        let (status, next) = self.tray_status();
+        menu.set_status_text(status.into());
+        menu.set_next_text(next.into());
+        let session = self.clone();
+        menu.on_show_main({
+            let session = session.clone();
+            move || session.reveal_main()
         });
-        menu.on_quit_app(|| {
-            let _ = slint::quit_event_loop();
+        menu.on_new_reminder({
+            let session = session.clone();
+            move || session.new_reminder_from_tray()
+        });
+        menu.on_backup({
+            let session = session.clone();
+            move || session.backup_from_tray()
+        });
+        menu.on_quit_app({
+            let session = session.clone();
+            move || session.quit_from_tray()
         });
         let weak = menu.as_weak();
         menu.on_dismiss(move || {
@@ -1039,8 +1264,8 @@ impl Session {
             .map(|ui| ui.window().scale_factor())
             .unwrap_or(1.0)
             .max(1.0);
-        let menu_w = (196.0 * scale).round() as i32;
-        let menu_h = (84.0 * scale).round() as i32;
+        let menu_w = (xembed_tray::MENU_W as f32 * scale).round() as i32;
+        let menu_h = (xembed_tray::MENU_H as f32 * scale).round() as i32;
         let (x, y) = xembed_tray::tray_menu_origin(&anchor, menu_w, menu_h);
         let position = slint::PhysicalPosition::new(x, y);
         menu.window().set_position(position);
@@ -1167,6 +1392,20 @@ fn build_reminder_mapped(
     count: usize,
 ) -> Result<Reminder, Report> {
     reminder_core::build_reminder(draft, previous, now, count)
+}
+
+const BACKUP_MENU_LIMIT: usize = 5;
+
+/// 备份文件名形如 reminders-20260101-120000123.json，显示时转成可读时间。
+fn backup_label(path: &Path) -> String {
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+    let stamp = name.trim_start_matches("reminders-").trim_end_matches(".json");
+    let parsed = chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%d-%H%M%S%3f")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%d-%H%M%S"));
+    match parsed {
+        Ok(at) => at.format("%Y-%m-%d %H:%M:%S").to_string(),
+        Err(_) => name.to_string(),
+    }
 }
 
 fn lock_store(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {

@@ -79,17 +79,40 @@ impl Store {
     }
 
     /// 把当前内存里的提醒写成一份带时间戳的副本，不替换正在使用的文件。
+    /// 只保留最近 `KEEP_BACKUPS` 份，更早的副本会被删除。
     pub fn backup(&self) -> Result<PathBuf, String> {
-        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-        let name = format!("reminders-{stamp}.json");
-        let path = self
-            .path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(name);
+        let dir = self.backup_dir();
+        let path = fresh_backup_path(&dir);
         let bytes = encode(&self.reminders)?;
         atomic_write(&path, &bytes)?;
+        prune_backups(&dir, KEEP_BACKUPS);
         Ok(path)
+    }
+
+    /// 已有的备份文件，最新的排在前面。
+    pub fn list_backups(&self) -> Vec<PathBuf> {
+        list_backup_files(&self.backup_dir())
+    }
+
+    /// 用一份备份替换当前提醒。替换前会先备份当前数据，恢复后仍可撤回。
+    /// 返回恢复后的提醒条数。
+    pub fn restore(&mut self, backup: &Path) -> Result<usize, String> {
+        self.ensure_writable()?;
+        let data = read_data(backup)?;
+        if data.version == 0 || data.version > VERSION {
+            return Err(format!("这份备份的版本是 {}，当前程序无法读取", data.version));
+        }
+        self.backup()?;
+        self.reminders = data.reminders;
+        self.write_all()?;
+        Ok(self.reminders.len())
+    }
+
+    fn backup_dir(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
     }
 
     fn ensure_writable(&self) -> Result<(), String> {
@@ -182,6 +205,47 @@ fn quarantine(path: &Path) {
     name.push(".broken");
     let target = path.with_file_name(name);
     let _ = fs::rename(path, target);
+}
+
+const KEEP_BACKUPS: usize = 10;
+
+/// 备份文件名按毫秒递增，同一毫秒内的重复备份会顺延，避免覆盖已有副本。
+fn fresh_backup_path(dir: &Path) -> PathBuf {
+    let mut at = chrono::Local::now();
+    loop {
+        let name = format!("reminders-{}.json", at.format("%Y%m%d-%H%M%S%3f"));
+        let path = dir.join(name);
+        if !path.exists() {
+            return path;
+        }
+        at += chrono::Duration::milliseconds(1);
+    }
+}
+
+fn is_backup_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("reminders-") && name.ends_with(".json"))
+}
+
+/// 文件名里带时间戳，字典序就是时间顺序；返回结果最新的在前。
+fn list_backup_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| is_backup_name(path))
+        .collect();
+    files.sort();
+    files.reverse();
+    files
+}
+
+fn prune_backups(dir: &Path, keep: usize) {
+    for old in list_backup_files(dir).into_iter().skip(keep) {
+        let _ = fs::remove_file(old);
+    }
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -334,5 +398,39 @@ mod tests {
             Schedule::Cron { expression } => assert_eq!(expression, "0 18 * * 1-5"),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn backups_are_pruned_to_the_newest_ones() {
+        let path = temp_path("prune");
+        let dir = path.parent().unwrap().to_path_buf();
+        for i in 0..KEEP_BACKUPS + 3 {
+            fs::write(dir.join(format!("reminders-20260101-{i:06}.json")), b"{}").unwrap();
+        }
+        prune_backups(&dir, KEEP_BACKUPS);
+        let left = list_backup_files(&dir);
+        assert_eq!(left.len(), KEEP_BACKUPS);
+        assert!(left[0].ends_with("reminders-20260101-000012.json"));
+        assert!(left[KEEP_BACKUPS - 1].ends_with("reminders-20260101-000003.json"));
+    }
+
+    #[test]
+    fn restore_replaces_reminders_and_keeps_a_pre_restore_backup() {
+        let path = temp_path("restore");
+        let mut store = Store::open(path.clone());
+        let reminder = one();
+        let id = reminder.id.clone();
+        store.upsert(reminder).unwrap();
+        let saved = store.backup().unwrap();
+        store.delete(&id).unwrap();
+        assert!(store.reminders.is_empty());
+        let count = store.restore(&saved).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(Store::open(path).reminders.len(), 1);
+        assert!(saved.exists(), "恢复不能删除被恢复的备份");
+        let backups = store.list_backups();
+        assert_eq!(backups.len(), 2);
+        assert_ne!(backups[0], saved);
+        assert!(read_data(&backups[0]).unwrap().reminders.is_empty());
     }
 }

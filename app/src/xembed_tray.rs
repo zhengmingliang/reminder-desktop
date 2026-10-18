@@ -398,6 +398,10 @@ fn icon_rect(conn: &RustConnection, root: u32, window: u32) -> (i32, i32, i32, i
     )
 }
 
+/// 托盘菜单的逻辑尺寸，和设计稿一致（264 宽）。菜单窗口和定位共用这两个值。
+pub const MENU_W: i32 = 264;
+pub const MENU_H: i32 = 256;
+
 /// 菜单贴着图标上沿，右边缘和图标对齐，并留在虚拟屏幕里。
 pub fn tray_menu_origin(anchor: &TrayMenuAnchor, menu_w: i32, menu_h: i32) -> (i32, i32) {
     let gap = 6;
@@ -434,45 +438,44 @@ pub fn tray_menu_origin(anchor: &TrayMenuAnchor, menu_w: i32, menu_h: i32) -> (i
     (x, y)
 }
 
+/// 设计稿里的托盘图标底色：深青色 #0B6B63。
+const TILE_TEAL: (u8, u8, u8) = (0x0B, 0x6B, 0x63);
+/// 铃铛占圆角方块的比例，四周留出呼吸空间。
+const BELL_SCALE: f32 = 0.72;
+
+/// 圆角方块：角落之外露出面板底色，其余区域都是青色底。
+fn tile_shape(nx: f32, ny: f32) -> bool {
+    const R: f32 = 0.24;
+    let dx = nx - nx.clamp(R, 1.0 - R);
+    let dy = ny - ny.clamp(R, 1.0 - R);
+    dx * dx + dy * dy <= R * R
+}
+
+/// 把方块坐标映射到铃铛坐标后判断是否落在白色铃铛上。
+fn bell_glyph(nx: f32, ny: f32) -> bool {
+    bell_shape(
+        (nx - 0.5) / BELL_SCALE + 0.5,
+        (ny - 0.5) / BELL_SCALE + 0.5,
+    )
+}
+
 fn bell_image(width: u16, height: u16, red: u32, green: u32, blue: u32, bg: (u8, u8, u8)) -> Vec<u8> {
-    let glyph = glyph_color(bg);
     let mut data = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height {
         for x in 0..width {
             let nx = (f32::from(x) + 0.5) / f32::from(width);
             let ny = (f32::from(y) + 0.5) / f32::from(height);
-            let (_, _, _, alpha) = bell_pixel(nx, ny);
-            let (r, g, b) = if alpha == 0 { bg } else { glyph };
+            let (r, g, b) = if !tile_shape(nx, ny) {
+                bg
+            } else if bell_glyph(nx, ny) {
+                (255, 255, 255)
+            } else {
+                TILE_TEAL
+            };
             data.extend_from_slice(&pack(r, g, b, 255, red, green, blue, 0).to_ne_bytes());
         }
     }
     data
-}
-
-fn glyph_color(bg: (u8, u8, u8)) -> (u8, u8, u8) {
-    let luma = u32::from(bg.0) * 3 + u32::from(bg.1) * 6 + u32::from(bg.2);
-    if luma > 1_600 {
-        (32, 37, 41)
-    } else {
-        (255, 255, 255)
-    }
-}
-
-fn bell_pixel(nx: f32, ny: f32) -> (u8, u8, u8, u8) {
-    if bell_shape(nx, ny) {
-        return (255, 255, 255, 255);
-    }
-    let outline = 0.045;
-    let neighbors = [
-        (nx - outline, ny),
-        (nx + outline, ny),
-        (nx, ny - outline),
-        (nx, ny + outline),
-    ];
-    if neighbors.into_iter().any(|(x, y)| bell_shape(x, y)) {
-        return (32, 37, 41, 230);
-    }
-    (0, 0, 0, 0)
 }
 
 fn bell_shape(nx: f32, ny: f32) -> bool {
@@ -520,8 +523,8 @@ fn intern(conn: &RustConnection, name: &str) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bell_image, bell_pixel, bell_shape, dock, free_pixmap, paint, tray_menu_origin,
-        TrayMenuAnchor,
+        bell_image, bell_shape, dock, free_pixmap, paint, tray_menu_origin, tile_shape,
+        TrayMenuAnchor, MENU_H, MENU_W,
     };
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
@@ -529,39 +532,11 @@ mod tests {
     use x11rb::rust_connection::RustConnection;
 
     #[test]
-    fn bell_is_a_glyph_not_a_filled_square() {
-        let mut opaque = 0;
-        let mut picture = String::new();
-        for y in 0..24 {
-            for x in 0..24 {
-                let nx = (x as f32 + 0.5) / 24.0;
-                let ny = (y as f32 + 0.5) / 24.0;
-                let (_, _, _, alpha) = bell_pixel(nx, ny);
-                if alpha > 0 {
-                    opaque += 1;
-                }
-                picture.push(if bell_shape(nx, ny) {
-                    '#'
-                } else if alpha > 0 {
-                    '+'
-                } else {
-                    '.'
-                });
-            }
-            picture.push('\n');
-        }
-        assert!(opaque > 40, "{picture}");
-        assert!(opaque < 24 * 24 / 2, "{picture}");
-        assert_eq!(bell_pixel(0.02, 0.02).3, 0, "{picture}");
-        assert!(bell_shape(0.5, 0.4), "{picture}");
-        assert!(bell_shape(0.5, 0.83), "{picture}");
-    }
-
-    #[test]
-    fn bell_image_keeps_panel_color_outside_the_glyph() {
+    fn icon_is_a_teal_tile_with_a_white_bell() {
         let bg = (28, 28, 32);
         let data = bell_image(24, 24, 0x00ff_0000, 0x0000_ff00, 0x0000_00ff, bg);
-        let mut glyph = 0;
+        let mut white = 0;
+        let mut teal = 0;
         let mut panel = 0;
         for px in data.chunks(4) {
             let word = u32::from_ne_bytes([px[0], px[1], px[2], px[3]]);
@@ -571,13 +546,20 @@ mod tests {
                 (word & 0xff) as u8,
             );
             if color == (255, 255, 255) {
-                glyph += 1;
+                white += 1;
+            } else if color == (0x0B, 0x6B, 0x63) {
+                teal += 1;
             } else if color == bg {
                 panel += 1;
             }
         }
-        assert!(glyph > 40, "glyph {glyph}");
-        assert!(panel > 24 * 24 / 2, "panel {panel}");
+        assert!(white > 40, "white {white}");
+        assert!(teal > white, "teal {teal} white {white}");
+        assert!(panel > 0 && panel < 24 * 24 / 4, "panel {panel}");
+        assert!(!tile_shape(0.02, 0.02));
+        assert!(tile_shape(0.5, 0.02));
+        assert!(bell_shape(0.5, 0.4));
+        assert!(bell_shape(0.5, 0.83));
     }
 
     #[test]
@@ -592,11 +574,11 @@ mod tests {
             screen_w: 4480,
             screen_h: 1600,
         };
-        let (x, y) = tray_menu_origin(&anchor, 196, 84);
+        let (x, y) = tray_menu_origin(&anchor, MENU_W, MENU_H);
         assert!(x > 3000, "x={x}");
-        assert!(y > 1400 && y < 1568, "y={y}");
-        assert!(x + 196 <= 4480);
-        assert!(y + 84 <= 1600);
+        assert!(y >= 0 && y + MENU_H <= 1568, "y={y}");
+        assert!(x + MENU_W <= 4480);
+        assert!(y + MENU_H <= 1600);
     }
 
     /// 会在当前桌面的托盘上短暂放一个铃铛。普通 `cargo test` 不跑。
@@ -709,7 +691,7 @@ mod tests {
             screen_w: 1920,
             screen_h: 1080,
         };
-        let (x, y) = tray_menu_origin(&anchor, 196, 84);
+        let (x, y) = tray_menu_origin(&anchor, MENU_W, MENU_H);
         assert_eq!((x, y), (0, 30));
     }
 }

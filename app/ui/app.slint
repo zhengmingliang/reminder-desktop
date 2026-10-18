@@ -21,31 +21,34 @@ export struct PreviewLine {
     text: string,
 }
 
+// Theme.dark switches every token between the light and dark palettes.
+// Dark values are sampled from the v2 dark design (rendered DOM).
 export global Theme {
-    out property <color> canvas: #F2F4F6;
-    out property <color> sidebar: #F7F9FA;
-    out property <color> card: #FFFFFF;
-    out property <color> hover: #EEF2F5;
-    out property <color> ink: #16212B;
-    out property <color> secondary: #2B3844;
-    out property <color> label: #46535F;
-    out property <color> muted: #667583;
-    out property <color> line: #E1E6EB;
-    out property <color> field: #C9D1D9;
-    out property <color> button-line: #D5DCE3;
-    out property <color> accent: #0B6B63;
-    out property <color> accent-deep: #095A54;
-    out property <color> accent-soft: #E8F3F1;
-    out property <color> accent-line: #BCDAD5;
-    out property <color> accent-ink: #0B5A54;
-    out property <color> on-accent: #FFFFFF;
-    out property <color> danger: #B42318;
-    out property <color> danger-line: #FDA29B;
-    out property <color> warn-bg: #FFF7E6;
-    out property <color> warn-line: #F1D9A0;
-    out property <color> warn-ink: #7A4A00;
-    out property <color> ok-bg: #ECFDF3;
-    out property <color> ok-ink: #067647;
+    in-out property <bool> dark: false;
+    out property <color> canvas: dark ? #12161B : #F2F4F6;
+    out property <color> sidebar: dark ? #161B21 : #F7F9FA;
+    out property <color> card: dark ? #1A2027 : #FFFFFF;
+    out property <color> hover: dark ? #222A33 : #EEF2F5;
+    out property <color> ink: dark ? #E8EDF2 : #16212B;
+    out property <color> secondary: dark ? #D0D7DF : #2B3844;
+    out property <color> label: dark ? #B6C0CA : #46535F;
+    out property <color> muted: dark ? #8E9BA8 : #667583;
+    out property <color> line: dark ? #293139 : #E1E6EB;
+    out property <color> field: dark ? #3B4652 : #C9D1D9;
+    out property <color> button-line: dark ? #3B4652 : #D5DCE3;
+    out property <color> accent: dark ? #3CC4B3 : #0B6B63;
+    out property <color> accent-deep: dark ? #56D6C6 : #095A54;
+    out property <color> accent-soft: dark ? #12332F : #E8F3F1;
+    out property <color> accent-line: dark ? #1F564F : #BCDAD5;
+    out property <color> accent-ink: dark ? #5ED6C7 : #0B5A54;
+    out property <color> on-accent: dark ? #12161B : #FFFFFF;
+    out property <color> danger: dark ? #F97066 : #B42318;
+    out property <color> danger-line: dark ? #7A3A35 : #FDA29B;
+    out property <color> warn-bg: dark ? #33270E : #FFF7E6;
+    out property <color> warn-line: dark ? #6B5018 : #F1D9A0;
+    out property <color> warn-ink: dark ? #F6C766 : #7A4A00;
+    out property <color> ok-bg: dark ? #0F3324 : #ECFDF3;
+    out property <color> ok-ink: dark ? #47CD89 : #067647;
     out property <color> titlebar: #25282D;
     out property <color> titlebar-ink: #C9CED4;
     out property <color> scrim: #0000004D;
@@ -251,17 +254,19 @@ component StatCard inherits Rectangle {
 component TrayRow inherits Rectangle {
     in property <string> label;
     in property <bool> danger: false;
+    in property <bool> primary: false;
     callback clicked();
     height: 32px;
     border-radius: 6px;
-    background: area.has-hover ? Theme.hover : transparent;
+    background: root.primary ? Theme.accent-soft : (area.has-hover ? Theme.hover : transparent);
     Text {
         x: 10px;
         width: parent.width - 20px;
         height: parent.height;
         text: root.label;
-        color: root.danger ? Theme.danger : Theme.ink;
+        color: root.danger ? Theme.danger : (root.primary ? Theme.accent-ink : Theme.ink);
         font-size: 13px;
+        font-weight: root.primary ? 600 : 400;
         vertical-alignment: center;
     }
     area := TouchArea {
@@ -269,18 +274,41 @@ component TrayRow inherits Rectangle {
     }
 }
 
+component MenuDivider inherits Rectangle {
+    height: 9px;
+    Rectangle {
+        x: 4px;
+        y: 4px;
+        width: parent.width - 8px;
+        height: 1px;
+        background: Theme.line;
+    }
+}
+
 export component AppTray inherits SystemTrayIcon {
     icon: @image-url("../assets/icon-128.png");
-    in-out property <string> tip: "桌面提醒正在运行";
+    in-out property <string> tip: "桌面提醒 · 后台运行中";
     tooltip: tip;
     title: "桌面提醒";
     callback show-window();
+    callback toggle-window();
+    callback new-reminder();
+    callback backup();
     callback quit-app();
-    clicked => { root.show-window(); }
+    clicked => { root.toggle-window(); }
     Menu {
         MenuItem {
-            title: "显示主窗口";
+            title: "打开主窗口";
             activated => { root.show-window(); }
+        }
+        MenuItem {
+            title: "新建提醒…";
+            activated => { root.new-reminder(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "备份…";
+            activated => { root.backup(); }
         }
         MenuSeparator { }
         MenuItem {
@@ -293,12 +321,16 @@ export component AppTray inherits SystemTrayIcon {
 export component TrayMenu inherits Window {
     no-frame: true;
     always-on-top: true;
-    width: 196px;
-    height: 84px;
+    width: 264px;
+    height: 256px;
     background: Theme.card;
     in-out property <string> ui-font: "Noto Sans CJK SC";
+    in-out property <string> status-text: "";
+    in-out property <string> next-text: "";
     default-font-family: ui-font;
     callback show-main();
+    callback new-reminder();
+    callback backup();
     callback quit-app();
     callback dismiss();
     Rectangle {
@@ -310,9 +342,35 @@ export component TrayMenu inherits Window {
         border-radius: 8px;
         VerticalLayout {
             padding: 6px;
-            spacing: 2px;
-            TrayRow { label: "显示主窗口"; clicked => { root.show-main(); root.dismiss(); } }
-            TrayRow { label: "退出"; danger: true; clicked => { root.quit-app(); } }
+            VerticalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                padding-top: 6px;
+                padding-bottom: 6px;
+                spacing: 2px;
+                Text { text: "桌面提醒"; font-size: 13px; font-weight: 600; color: Theme.ink; }
+                Text { text: root.status-text; font-size: 12px; color: Theme.muted; overflow: elide; }
+            }
+            MenuDivider { }
+            TrayRow { label: "打开主窗口"; primary: true; clicked => { root.show-main(); root.dismiss(); } }
+            TrayRow { label: "新建提醒…"; clicked => { root.new-reminder(); root.dismiss(); } }
+            MenuDivider { }
+            Rectangle {
+                height: 32px;
+                Text {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text: root.next-text;
+                    color: Theme.label;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            MenuDivider { }
+            TrayRow { label: "备份…"; clicked => { root.backup(); root.dismiss(); } }
+            TrayRow { label: "退出"; danger: true; clicked => { root.dismiss(); root.quit-app(); } }
         }
     }
 }
@@ -385,7 +443,7 @@ export component PopupWindow inherits Window {
                             spacing: 2px;
                             alignment: center;
                             Text { text: root.kicker; font-size: 12px; font-weight: 600; color: Theme.accent; }
-                            Text { text: "计划时间 " + root.when-text; font-size: 12px; color: Theme.muted; }
+                            Text { text: root.when-text; font-size: 12px; color: Theme.muted; }
                         }
                         Rectangle { horizontal-stretch: 1; }
                         Rectangle {
@@ -450,13 +508,11 @@ export component PopupWindow inherits Window {
                         Btn { height: 40px; width: 92px; label: "1 小时"; clicked => { root.snooze(60); } }
                     }
                 }
-                Rectangle {
+                VerticalLayout {
                     height: 64px;
-                    background: Theme.card;
-                    Rectangle { width: 100%; height: 1px; background: Theme.line; }
+                    Rectangle { height: 1px; background: Theme.line; }
                     HorizontalLayout {
-                        y: 14px;
-                        height: 36px;
+                        padding-top: 14px;
                         padding-left: 24px;
                         padding-right: 24px;
                         spacing: 8px;
@@ -544,6 +600,7 @@ export component MainWindow inherits Window {
     in-out property <string> history-hint: "";
     in-out property <string> tab-all: "0";
     in-out property <string> tab-pending: "0";
+    in-out property <string> tab-today: "0";
     in-out property <string> tab-fired: "0";
     in-out property <string> tab-paused: "0";
     in-out property <string> list-filter: "all";
@@ -585,6 +642,11 @@ export component MainWindow inherits Window {
     in-out property <string> hover-tip: "";
     in-out property <length> hover-tip-x: 0px;
     in-out property <length> hover-tip-y: 0px;
+    in-out property <bool> settings-open: false;
+    in-out property <bool> autostart-on: false;
+    callback autostart-changed(bool);
+    in-out property <[string]> backup-names: [];
+    callback restore-backup(int);
 
     callback search-changed(string);
     callback filter-changed(string);
@@ -618,6 +680,7 @@ export component MainWindow inherits Window {
             if (event.modifiers.control && event.text == "n") { root.new-reminder(); return accept; }
             if (event.modifiers.control && event.text == "s") { root.save(); return accept; }
             if (event.modifiers.control && event.text == "f") { search-box.take-focus(); return accept; }
+            if (event.text == Key.Escape && root.settings-open) { root.settings-open = false; return accept; }
             if (event.text == Key.Escape && root.browser-open) { root.browse-cancel(); return accept; }
             reject
         }
@@ -681,7 +744,7 @@ export component MainWindow inherits Window {
                         color: Theme.muted;
                     }
                     Rectangle {
-                        x: parent.width - 395px;
+                        x: parent.width - 442px;
                         y: 10px;
                         width: 246px;
                         height: 32px;
@@ -730,18 +793,25 @@ export component MainWindow inherits Window {
                         }
                     }
                     Rectangle {
-                        x: parent.width - 117px;
+                        x: parent.width - 181px;
                         y: 15px;
                         width: 1px;
                         height: 22px;
                         background: Theme.line;
                     }
                     Btn {
-                        x: parent.width - 102px;
+                        x: parent.width - 166px;
                         y: 10px;
                         width: 72px;
                         label: "备份";
                         clicked => { root.backup(); }
+                    }
+                    Btn {
+                        x: parent.width - 86px;
+                        y: 10px;
+                        width: 56px;
+                        label: "设置";
+                        clicked => { root.settings-open = !root.settings-open; }
                     }
                 }
 
@@ -926,7 +996,7 @@ export component MainWindow inherits Window {
                                         spacing: 6px;
                                         Text { text: root.date-text; font-size: 12px; color: Theme.muted; }
                                         Text {
-                                            text: "今天还有 " + root.tab-pending + " 条提醒";
+                                            text: "今天还有 " + root.tab-today + " 条提醒";
                                             font-size: 22px;
                                             font-weight: 600;
                                             color: Theme.ink;
@@ -1366,6 +1436,65 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // Settings popover: click outside or press Esc to close
+            if root.settings-open : Rectangle {
+                width: 100%;
+                height: 100%;
+                TouchArea { clicked => { root.settings-open = false; } }
+                Rectangle {
+                    x: root.width - 246px;
+                    y: 92px;
+                    width: 230px;
+                    height: 392px;
+                    border-radius: 10px;
+                    background: Theme.card;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    Text { x: 16px; y: 14px; text: "外观"; font-size: 12px; font-weight: 600; color: Theme.muted; }
+                    Text { x: 16px; y: 36px; text: "主题"; font-size: 14px; font-weight: 600; color: Theme.ink; }
+                    Btn { x: 16px; y: 62px; width: 96px; label: "浅色"; primary: !Theme.dark; clicked => { Theme.dark = false; } }
+                    Btn { x: 118px; y: 62px; width: 96px; label: "深色"; primary: Theme.dark; clicked => { Theme.dark = true; } }
+                    Text { x: 16px; y: 102px; text: "切换后立即生效"; font-size: 12px; color: Theme.muted; }
+                    Rectangle { x: 16px; y: 128px; width: 198px; height: 1px; background: Theme.line; }
+                    Text { x: 16px; y: 142px; text: "开机自启动"; font-size: 14px; font-weight: 600; color: Theme.ink; }
+                    Rectangle {
+                        x: 174px;
+                        y: 140px;
+                        width: 40px;
+                        height: 22px;
+                        border-radius: 11px;
+                        background: root.autostart-on ? Theme.accent : Theme.field;
+                        Rectangle {
+                            x: root.autostart-on ? 20px : 2px;
+                            y: 2px;
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 9px;
+                            background: #FFFFFF;
+                            animate x { duration: 120ms; }
+                        }
+                        TouchArea { clicked => { root.autostart-changed(!root.autostart-on); } }
+                    }
+                    Text { x: 16px; y: 166px; text: "登录系统后自动运行"; font-size: 12px; color: Theme.muted; }
+                    Rectangle { x: 16px; y: 196px; width: 198px; height: 1px; background: Theme.line; }
+                    Text { x: 16px; y: 206px; text: "从备份恢复"; font-size: 14px; font-weight: 600; color: Theme.ink; }
+                    Text { x: 16px; y: 232px; visible: root.backup-names.length == 0; text: "暂无备份，点击顶部“备份”生成"; font-size: 12px; color: Theme.muted; wrap: word-wrap; width: 198px; }
+                    VerticalLayout {
+                        x: 16px;
+                        y: 232px;
+                        width: 198px;
+                        spacing: 4px;
+                        for name[index] in root.backup-names : Rectangle {
+                            height: 26px;
+                            border-radius: 6px;
+                            background: restore-touch.has-hover ? Theme.field : transparent;
+                            Text { x: 8px; width: parent.width - 16px; height: parent.height; text: name; font-size: 12px; color: Theme.label; vertical-alignment: center; overflow: elide; }
+                            restore-touch := TouchArea { clicked => { root.settings-open = false; root.restore-backup(index); } }
+                        }
+                    }
+                }
+            }
+
             // Confirm dialog overlay
             if root.dialog != "" : Rectangle {
                 width: 100%;
@@ -1392,7 +1521,7 @@ export component MainWindow inherits Window {
                             Btn { width: 80px; label: "取消"; clicked => { root.dialog-cancel(); } }
                             Btn {
                                 width: 80px;
-                                label: root.dialog == "delete" ? "删除" : "放弃修改";
+                                label: root.dialog == "delete" ? "删除" : (root.dialog == "quit" ? "退出" : (root.dialog == "restore" ? "恢复" : "放弃修改"));
                                 danger: root.dialog == "delete";
                                 primary: root.dialog != "delete";
                                 clicked => {                                                    root.dialog-confirm(); }
