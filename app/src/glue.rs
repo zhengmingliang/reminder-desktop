@@ -8,8 +8,8 @@ use std::time::Duration;
 use chrono::{DateTime, Datelike, Local, Offset, Timelike};
 use reminder_core::validate::arm_snooze;
 use reminder_core::{
-    check_sound_file, format_point, inspect, millis_to_local, Draft, Kind, Reminder, Report,
-    Status, Store,
+    check_sound_file, format_point, inspect, millis_to_local, load_settings, save_settings,
+    settings_path, Draft, Kind, Reminder, Report, Settings, Status, Store, ThemeMode,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
@@ -62,6 +62,8 @@ struct Session {
     reveal_errors: Cell<bool>,
     backups: RefCell<Vec<PathBuf>>,
     pending_restore: RefCell<Option<PathBuf>>,
+    /// 主题模式（浅色 / 跟随系统 / 深色），持久化在 settings.json。
+    theme_mode: Cell<ThemeMode>,
 }
 
 pub fn run(smoke: bool) -> Result<(), String> {
@@ -120,6 +122,10 @@ pub fn run(smoke: bool) -> Result<(), String> {
     ui.set_mono_font(mono_font().into());
     ui.set_autostart_on(crate::autostart::is_enabled());
 
+    let settings = load_settings(&settings_path(&data_dir));
+    ui.set_theme_mode(settings.theme.as_index());
+    apply_theme(&ui, settings.theme);
+
     let rows = Rc::new(VecModel::<ReminderRow>::default());
     let dirs = Rc::new(VecModel::<DirEntry>::default());
     ui.set_rows(rows.clone().into());
@@ -151,6 +157,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
         reveal_errors: Cell::new(false),
         backups: RefCell::new(Vec::new()),
         pending_restore: RefCell::new(None),
+        theme_mode: Cell::new(settings.theme),
     });
 
     if let Some(reason) = lock_store(&store).persist_block_reason().map(str::to_string) {
@@ -231,12 +238,25 @@ pub fn run(smoke: bool) -> Result<(), String> {
         }
     });
 
+    // 跟随系统时定期重探系统深浅色，切换系统主题后自动跟上。
+    let theme_timer = slint::Timer::default();
+    let theme_session = session.clone();
+    let theme_ui = ui.as_weak();
+    theme_timer.start(slint::TimerMode::Repeated, Duration::from_secs(30), move || {
+        if theme_session.theme_mode.get() == ThemeMode::System {
+            if let Some(ui) = theme_ui.upgrade() {
+                apply_theme(&ui, ThemeMode::System);
+            }
+        }
+    });
+
     slint::run_event_loop_until_quit().map_err(|error| format!("事件循环退出：{error}"))?;
     log.log("INFO", "退出");
     drop(lock);
     drop(timer);
     drop(smoke_timer);
     drop(center_timer);
+    drop(theme_timer);
     Ok(())
 }
 
@@ -291,6 +311,10 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_re
     ui.on_autostart_changed({
         let session = session.clone();
         move |on| session.set_autostart(on)
+    });
+    ui.on_theme_changed({
+        let session = session.clone();
+        move |index| session.set_theme_mode(index)
     });
     ui.on_quit({
         let session = session.clone();
@@ -756,6 +780,21 @@ impl Session {
                 self.log.log("ERROR", &format!("开机自启动设置失败：{error}"));
                 self.toast(&error);
             }
+        }
+    }
+
+    /// 切换主题模式：立即生效，并把选择持久化到 settings.json。
+    fn set_theme_mode(&self, index: i32) {
+        let mode = ThemeMode::from_index(index);
+        self.theme_mode.set(mode);
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_theme_mode(mode.as_index());
+            apply_theme(&ui, mode);
+        }
+        let path = settings_path(&self.data_dir);
+        if let Err(error) = save_settings(&path, &Settings { theme: mode }) {
+            self.log.log("ERROR", &format!("主题设置保存失败：{error}"));
+            self.toast("主题设置未能保存");
         }
     }
 
@@ -2012,6 +2051,16 @@ fn with_winit<T>(window: &slint::Window, f: impl FnOnce(&winit::window::Window) 
 
 fn place_main(window: &slint::Window) {
     place_window(window, 0, 1100, 740, false, false);
+}
+
+/// 把主题模式落到实际深浅色：浅色/深色直接生效，跟随系统则实时探测。
+fn apply_theme(ui: &MainWindow, mode: ThemeMode) {
+    let dark = match mode {
+        ThemeMode::Light => false,
+        ThemeMode::Dark => true,
+        ThemeMode::System => crate::system_theme::detect_dark(),
+    };
+    Theme::get(ui).set_dark(dark);
 }
 
 fn select_backend() -> Result<(), String> {

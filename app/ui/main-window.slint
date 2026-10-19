@@ -523,6 +523,8 @@ export component MainWindow inherits Window {
     in-out property <string> dialog-message: "";
     in-out property <bool> settings-open: false;
     in-out property <bool> autostart-on: false;
+    // 0 浅色 / 1 跟随系统 / 2 深色；默认跟随系统。
+    in-out property <int> theme-mode: 1;
     in-out property <[string]> backup-names: [];
 
     callback search-changed(string);
@@ -556,6 +558,7 @@ export component MainWindow inherits Window {
     callback maximize-window();
     callback quit();
     callback autostart-changed(bool);
+    callback theme-changed(int);
     callback restore-backup(int);
 
     // 界面本地状态
@@ -2383,26 +2386,24 @@ export component MainWindow inherits Window {
                         font-weight: 600;
                         color: Theme.text;
                     }
-                    Btn {
+                    Rectangle {
                         x: 16px;
                         y: 62px;
-                        width: 96px;
-                        primary: !Theme.dark;
-                        label: "浅色";
-                        clicked => { Theme.dark = false; }
-                    }
-                    Btn {
-                        x: 118px;
-                        y: 62px;
-                        width: 96px;
-                        primary: Theme.dark;
-                        label: "深色";
-                        clicked => { Theme.dark = true; }
+                        width: 198px;
+                        height: 28px;
+                        border-radius: 6px;
+                        background: Theme.seg;
+                        HorizontalLayout {
+                            spacing: 2px;
+                            SegBtn { label: "浅色"; active: root.theme-mode == 0; clicked => { root.theme-changed(0); } }
+                            SegBtn { label: "跟随系统"; active: root.theme-mode == 1; clicked => { root.theme-changed(1); } }
+                            SegBtn { label: "深色"; active: root.theme-mode == 2; clicked => { root.theme-changed(2); } }
+                        }
                     }
                     Text {
                         x: 16px;
                         y: 102px;
-                        text: "切换后立即生效";
+                        text: "默认跟随系统";
                         font-size: 12px;
                         color: Theme.text3;
                     }

@@ -4,6 +4,7 @@
 pub mod audio;
 pub mod model;
 pub mod schedule;
+pub mod settings;
 pub mod store;
 pub mod validate;
 
@@ -14,4 +15,5 @@ pub use schedule::{
     today_timeline, DueHit, ListText, RecordEntry, TimelineEntry,
 };
 pub use store::{default_data_dir, Store};
+pub use settings::{load_settings, save_settings, settings_path, Settings, ThemeMode};
 pub use validate::{build_reminder, inspect, next_cron_times, FieldError, Report};

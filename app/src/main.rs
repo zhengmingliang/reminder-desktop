@@ -5,6 +5,7 @@ mod glue;
 mod instance;
 mod logutil;
 mod runtime;
+mod system_theme;
 mod xembed_tray;
 
 use chrono::Local;
