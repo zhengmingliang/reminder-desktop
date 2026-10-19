@@ -196,6 +196,8 @@ pub fn build_reminder(
         early_notice_sent_ms: None,
         occurrence_count,
         skip_occurrence_ms,
+        // 保存后提醒回到待触发/循环，上一轮的确认记录不再代表这一轮，清掉。
+        acknowledged_at_ms: None,
         // 新建/编辑总是回到正常列表；恢复走 store 的 restore_deleted。
         deleted_at_ms: None,
     })

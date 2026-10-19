@@ -176,12 +176,13 @@ component ReminderItem inherits Rectangle {
     property <string> kind: root.item.badge-kind;
     property <bool> row-select: root.select-mode || root.trash-mode;
     property <bool> checked: root.item.checked;
-    property <bool> upcoming: root.kind != "fired" && root.kind != "paused";
+    property <bool> upcoming: root.kind != "fired" && root.kind != "paused" && root.kind != "done";
     property <bool> fired: root.kind == "fired";
     property <bool> paused: root.kind == "paused";
+    property <bool> done: root.kind == "done";
     property <string> icon-name: root.kind == "snooze"
         ? "clock-warn"
-        : root.fired
+        : root.fired || root.done
             ? "check-circle-ok"
             : root.paused
                 ? "pause-circle-ph"
@@ -256,7 +257,7 @@ component ReminderItem inherits Rectangle {
                 text: root.item.title;
                 font-size: 14px;
                 font-weight: root.paused ? 500 : 600;
-                color: root.fired ? Theme.text2 : root.paused ? Theme.text3 : Theme.text;
+                color: root.fired || root.done ? Theme.text2 : root.paused ? Theme.text3 : Theme.text;
                 overflow: elide;
             }
             Text {
@@ -294,6 +295,13 @@ component ReminderItem inherits Rectangle {
             font-size: 12px;
             font-weight: 500;
             color: Theme.warn-text;
+            vertical-alignment: center;
+        }
+        if !root.trash-mode && root.done : Text {
+            text: "已完成";
+            font-size: 12px;
+            font-weight: 500;
+            color: Theme.ok;
             vertical-alignment: center;
         }
     }
@@ -552,6 +560,7 @@ export component MainWindow inherits Window {
     in-out property <string> tab-pending: "0";
     in-out property <string> tab-today: "0";
     in-out property <string> tab-fired: "0";
+    in-out property <string> tab-done: "0";
     in-out property <string> tab-paused: "0";
     in-out property <string> list-filter: "all";
     in-out property <string> search-text: "";
@@ -633,6 +642,10 @@ export component MainWindow inherits Window {
     in-out property <int> selected-count: 0;
     in-out property <string> trash-count: "0";
     in-out property <int> trash-days: 30;
+    // 数据与日志：日志展开开关、日志尾部文本、打开目录的结果提示。
+    in-out property <bool> log-open: false;
+    in-out property <string> log-text: "";
+    in-out property <string> data-dir-status: "";
 
     callback search-changed(string);
     callback filter-changed(string);
@@ -696,6 +709,8 @@ export component MainWindow inherits Window {
     callback download-update();
     callback review-missed();
     callback dismiss-missed();
+    callback open-data-dir();
+    callback toggle-log();
 
     // 界面本地状态
     property <string> quick-text: "";
@@ -1261,6 +1276,28 @@ export component MainWindow inherits Window {
                                         multi-picked(id, ctrl, shift) => { root.multi-picked(id, ctrl, shift); }
                                     }
 
+                                    if root.tab-done != "0" && !root.trash-mode : GroupHeader {
+                                        label: "今天已完成";
+                                        count: root.tab-done;
+                                        active: root.list-filter == "done";
+                                        clicked => {
+                                            root.list-filter = root.list-filter == "done" ? "all" : "done";
+                                            root.filter-changed(root.list-filter);
+                                        }
+                                    }
+                                    for row in root.rows : ReminderItem {
+                                        shown: !root.trash-mode && row.badge-kind == "done";
+                                        mono-family: root.mono-font;
+                                        select-mode: root.select-mode;
+                                        item: row;
+                                        picked(id) => {
+                                            root.select-reminder(id);
+                                            root.main-view = "edit";
+                                        }
+                                        check-toggled(id) => { root.check-toggled(id); }
+                                        multi-picked(id, ctrl, shift) => { root.multi-picked(id, ctrl, shift); }
+                                    }
+
                                     if root.tab-paused != "0" && !root.trash-mode : GroupHeader {
                                         label: "已停用";
                                         count: root.tab-paused;
@@ -1635,6 +1672,11 @@ export component MainWindow inherits Window {
                                         horizontal-stretch: 1;
                                         number: root.tab-fired;
                                         caption: "今天已触发";
+                                    }
+                                    StatCard {
+                                        horizontal-stretch: 1;
+                                        number: root.tab-done;
+                                        caption: "今天已完成";
                                     }
                                     StatCard {
                                         horizontal-stretch: 1;
@@ -2833,287 +2875,332 @@ export component MainWindow inherits Window {
                     x: parent.width - 246px;
                     y: 92px;
                     width: 230px;
-                    height: 560px;
+                    // 内容比面板长，跟着窗口高度给到可用高度，超出部分在面板内滚动。
+                    height: Math.min(560px, parent.height - 104px);
                     border-radius: 10px;
                     border-width: 1px;
                     border-color: Theme.line;
                     background: Theme.surface;
 
-                    VerticalLayout {
-                        padding: 16px;
-                        spacing: 10px;
-
-                        Text { text: "外观"; font-size: 12px; font-weight: 600; color: Theme.text3; }
-                        Text { text: "主题"; font-size: 14px; font-weight: 600; color: Theme.text; }
-                        Rectangle {
-                            height: 28px;
-                            border-radius: 6px;
-                            background: Theme.seg;
-                            HorizontalLayout {
-                                spacing: 2px;
-                                SegBtn { label: "浅色"; active: root.theme-mode == 0; clicked => { root.theme-changed(0); } }
-                                SegBtn { label: "跟随系统"; active: root.theme-mode == 1; clicked => { root.theme-changed(1); } }
-                                SegBtn { label: "深色"; active: root.theme-mode == 2; clicked => { root.theme-changed(2); } }
-                            }
-                        }
-                        Text { text: "默认跟随系统"; font-size: 12px; color: Theme.text3; }
-                        Rectangle { height: 1px; background: Theme.line; }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: "开机自启动";
-                                font-size: 14px;
-                                font-weight: 600;
-                                color: Theme.text;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            Toggle {
-                                checked: root.autostart-on;
-                                toggled => { root.autostart-changed(!root.autostart-on); }
-                            }
-                        }
-                        Text { text: "登录系统后自动运行"; font-size: 12px; color: Theme.text3; }
-                        Rectangle { height: 1px; background: Theme.line; }
-
-                        Text { text: "未确认再响"; font-size: 14px; font-weight: 600; color: Theme.text; }
-                        Rectangle {
-                            height: 28px;
-                            border-radius: 6px;
-                            background: Theme.seg;
-                            HorizontalLayout {
-                                spacing: 2px;
-                                SegBtn { label: "关"; active: root.repeat-minutes == 0; clicked => { root.repeat-changed(0); } }
-                                SegBtn { label: "5 分"; active: root.repeat-minutes == 5; clicked => { root.repeat-changed(5); } }
-                                SegBtn { label: "10 分"; active: root.repeat-minutes == 10; clicked => { root.repeat-changed(10); } }
-                                SegBtn { label: "30 分"; active: root.repeat-minutes == 30; clicked => { root.repeat-changed(30); } }
-                            }
-                        }
-                        Text { text: "弹窗一直没处理时，每隔一段时间再响一次"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
-                        Rectangle { height: 1px; background: Theme.line; }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: "回收站保留期";
-                                font-size: 14px;
-                                font-weight: 600;
-                                color: Theme.text;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            trash-days-field := Field {
-                                width: 72px;
-                                field-height: 30px;
-                                font-size: 13px;
-                                mono: true;
-                                mono-family: root.mono-font;
-                                text: "\{root.trash-days}";
-                                placeholder: "30";
-                                edited(t) => { root.trash-days-changed(t.to-float()); }
-                            }
-                        }
-                        Text { text: "已删除的提醒在回收站保留 1-365 天后自动彻底清除"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
-                        Rectangle { height: 1px; background: Theme.line; }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: "全局快捷键";
-                                font-size: 14px;
-                                font-weight: 600;
-                                color: Theme.text;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            Toggle {
-                                checked: root.hotkey-on;
-                                toggled => { root.hotkey-changed(!root.hotkey-on); }
-                            }
-                        }
-                        Text { text: root.hotkey-status; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
-                        Rectangle { height: 1px; background: Theme.line; }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: "关闭窗口时隐藏到托盘";
-                                font-size: 14px;
-                                font-weight: 600;
-                                color: Theme.text;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            Toggle {
-                                checked: root.close-to-tray-on;
-                                toggled => { root.close-to-tray-changed(!root.close-to-tray-on); }
-                            }
-                        }
-                        Text {
-                            text: "开启时点关闭按钮收进托盘、后台继续提醒；关闭时点关闭按钮直接退出程序";
-                            font-size: 12px;
-                            color: Theme.text3;
-                            wrap: word-wrap;
-                        }
-                        Rectangle { height: 1px; background: Theme.line; }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: "勿扰时段";
-                                font-size: 14px;
-                                font-weight: 600;
-                                color: Theme.text;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            Toggle {
-                                checked: root.dnd-on;
-                                toggled => { root.dnd-changed(!root.dnd-on); }
-                            }
-                        }
-                        if root.dnd-on : HorizontalLayout {
-                            spacing: 8px;
-                            Field {
-                                horizontal-stretch: 1;
-                                field-height: 30px;
-                                font-size: 13px;
-                                text: root.dnd-start;
-                                placeholder: "22:00";
-                                edited(text) => { root.dnd-start-edited(text); }
-                            }
-                            Text {
-                                text: "至";
-                                font-size: 13px;
-                                color: Theme.text3;
-                                vertical-alignment: center;
-                            }
-                            Field {
-                                horizontal-stretch: 1;
-                                field-height: 30px;
-                                font-size: 13px;
-                                text: root.dnd-end;
-                                placeholder: "07:00";
-                                edited(text) => { root.dnd-end-edited(text); }
-                            }
-                        }
-                        if root.dnd-on : Rectangle {
-                            height: 28px;
-                            border-radius: 6px;
-                            background: Theme.seg;
-                            HorizontalLayout {
-                                spacing: 2px;
-                                SegBtn { label: "静音弹窗"; active: root.dnd-mode == 0; clicked => { root.dnd-mode-changed(0); } }
-                                SegBtn { label: "只记录"; active: root.dnd-mode == 1; clicked => { root.dnd-mode-changed(1); } }
-                            }
-                        }
-                        if root.dnd-status != "" : Text { text: root.dnd-status; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
-                        Text { text: "时段内到期的提醒：静音弹窗照弹但不响铃，只记录则不弹不响、可在概览「补看」"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
-                        Rectangle { height: 1px; background: Theme.line; }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: "备份";
-                                font-size: 14px;
-                                font-weight: 600;
-                                color: Theme.text;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            Btn {
-                                label: "立即备份";
-                                pad-x: 10px;
-                                font-size: 12px;
-                                clicked => { root.backup(); }
-                            }
-                        }
-                        Text {
-                            text: "把全部提醒导出为备份文件，可用于迁移或恢复";
-                            font-size: 12px;
-                            color: Theme.text3;
-                            wrap: word-wrap;
-                        }
-
-                        Text { text: "从备份恢复"; font-size: 14px; font-weight: 600; color: Theme.text; }
-                        if root.backup-names.length == 0 : Text {
-                            text: "暂无备份，点击上方「立即备份」生成";
-                            font-size: 12px;
-                            color: Theme.text3;
-                            wrap: word-wrap;
-                        }
+                        ScrollView {
                         VerticalLayout {
-                            spacing: 4px;
-                            for name[index] in root.backup-names : Rectangle {
-                                height: 26px;
+                            padding: 16px;
+                            spacing: 10px;
+
+                            Text { text: "外观"; font-size: 12px; font-weight: 600; color: Theme.text3; }
+                            Text { text: "主题"; font-size: 14px; font-weight: 600; color: Theme.text; }
+                            Rectangle {
+                                height: 28px;
                                 border-radius: 6px;
-                                background: restore-area.has-hover ? Theme.hover : transparent;
+                                background: Theme.seg;
+                                HorizontalLayout {
+                                    spacing: 2px;
+                                    SegBtn { label: "浅色"; active: root.theme-mode == 0; clicked => { root.theme-changed(0); } }
+                                    SegBtn { label: "跟随系统"; active: root.theme-mode == 1; clicked => { root.theme-changed(1); } }
+                                    SegBtn { label: "深色"; active: root.theme-mode == 2; clicked => { root.theme-changed(2); } }
+                                }
+                            }
+                            Text { text: "默认跟随系统"; font-size: 12px; color: Theme.text3; }
+                            Rectangle { height: 1px; background: Theme.line; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
                                 Text {
-                                    x: 8px;
-                                    width: parent.width - 16px;
-                                    height: parent.height;
-                                    text: name;
-                                    font-size: 12px;
-                                    color: Theme.text2;
-                                    overflow: elide;
+                                    text: "开机自启动";
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Toggle {
+                                    checked: root.autostart-on;
+                                    toggled => { root.autostart-changed(!root.autostart-on); }
+                                }
+                            }
+                            Text { text: "登录系统后自动运行"; font-size: 12px; color: Theme.text3; }
+                            Rectangle { height: 1px; background: Theme.line; }
+
+                            Text { text: "未确认再响"; font-size: 14px; font-weight: 600; color: Theme.text; }
+                            Rectangle {
+                                height: 28px;
+                                border-radius: 6px;
+                                background: Theme.seg;
+                                HorizontalLayout {
+                                    spacing: 2px;
+                                    SegBtn { label: "关"; active: root.repeat-minutes == 0; clicked => { root.repeat-changed(0); } }
+                                    SegBtn { label: "5 分"; active: root.repeat-minutes == 5; clicked => { root.repeat-changed(5); } }
+                                    SegBtn { label: "10 分"; active: root.repeat-minutes == 10; clicked => { root.repeat-changed(10); } }
+                                    SegBtn { label: "30 分"; active: root.repeat-minutes == 30; clicked => { root.repeat-changed(30); } }
+                                }
+                            }
+                            Text { text: "弹窗一直没处理时，每隔一段时间再响一次"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
+                            Rectangle { height: 1px; background: Theme.line; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "回收站保留期";
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                trash-days-field := Field {
+                                    width: 72px;
+                                    field-height: 30px;
+                                    font-size: 13px;
+                                    mono: true;
+                                    mono-family: root.mono-font;
+                                    text: "\{root.trash-days}";
+                                    placeholder: "30";
+                                    edited(t) => { root.trash-days-changed(t.to-float()); }
+                                }
+                            }
+                            Text { text: "已删除的提醒在回收站保留 1-365 天后自动彻底清除"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
+                            Rectangle { height: 1px; background: Theme.line; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "全局快捷键";
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Toggle {
+                                    checked: root.hotkey-on;
+                                    toggled => { root.hotkey-changed(!root.hotkey-on); }
+                                }
+                            }
+                            Text { text: root.hotkey-status; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
+                            Rectangle { height: 1px; background: Theme.line; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "关闭窗口时隐藏到托盘";
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Toggle {
+                                    checked: root.close-to-tray-on;
+                                    toggled => { root.close-to-tray-changed(!root.close-to-tray-on); }
+                                }
+                            }
+                            Text {
+                                text: "开启时点关闭按钮收进托盘、后台继续提醒；关闭时点关闭按钮直接退出程序";
+                                font-size: 12px;
+                                color: Theme.text3;
+                                wrap: word-wrap;
+                            }
+                            Rectangle { height: 1px; background: Theme.line; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "勿扰时段";
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Toggle {
+                                    checked: root.dnd-on;
+                                    toggled => { root.dnd-changed(!root.dnd-on); }
+                                }
+                            }
+                            if root.dnd-on : HorizontalLayout {
+                                spacing: 8px;
+                                Field {
+                                    horizontal-stretch: 1;
+                                    field-height: 30px;
+                                    font-size: 13px;
+                                    text: root.dnd-start;
+                                    placeholder: "22:00";
+                                    edited(text) => { root.dnd-start-edited(text); }
+                                }
+                                Text {
+                                    text: "至";
+                                    font-size: 13px;
+                                    color: Theme.text3;
                                     vertical-alignment: center;
                                 }
-                                restore-area := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.settings-open = false;
-                                        root.restore-backup(index);
+                                Field {
+                                    horizontal-stretch: 1;
+                                    field-height: 30px;
+                                    font-size: 13px;
+                                    text: root.dnd-end;
+                                    placeholder: "07:00";
+                                    edited(text) => { root.dnd-end-edited(text); }
+                                }
+                            }
+                            if root.dnd-on : Rectangle {
+                                height: 28px;
+                                border-radius: 6px;
+                                background: Theme.seg;
+                                HorizontalLayout {
+                                    spacing: 2px;
+                                    SegBtn { label: "静音弹窗"; active: root.dnd-mode == 0; clicked => { root.dnd-mode-changed(0); } }
+                                    SegBtn { label: "只记录"; active: root.dnd-mode == 1; clicked => { root.dnd-mode-changed(1); } }
+                                }
+                            }
+                            if root.dnd-status != "" : Text { text: root.dnd-status; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
+                            Text { text: "时段内到期的提醒：静音弹窗照弹但不响铃，只记录则不弹不响、可在概览「补看」"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
+                            Rectangle { height: 1px; background: Theme.line; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "备份";
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Btn {
+                                    label: "立即备份";
+                                    pad-x: 10px;
+                                    font-size: 12px;
+                                    clicked => { root.backup(); }
+                                }
+                            }
+                            Text {
+                                text: "把全部提醒导出为备份文件，可用于迁移或恢复";
+                                font-size: 12px;
+                                color: Theme.text3;
+                                wrap: word-wrap;
+                            }
+
+                            Text { text: "从备份恢复"; font-size: 14px; font-weight: 600; color: Theme.text; }
+                            if root.backup-names.length == 0 : Text {
+                                text: "暂无备份，点击上方「立即备份」生成";
+                                font-size: 12px;
+                                color: Theme.text3;
+                                wrap: word-wrap;
+                            }
+                            VerticalLayout {
+                                spacing: 4px;
+                                for name[index] in root.backup-names : Rectangle {
+                                    height: 26px;
+                                    border-radius: 6px;
+                                    background: restore-area.has-hover ? Theme.hover : transparent;
+                                    Text {
+                                        x: 8px;
+                                        width: parent.width - 16px;
+                                        height: parent.height;
+                                        text: name;
+                                        font-size: 12px;
+                                        color: Theme.text2;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    restore-area := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.settings-open = false;
+                                            root.restore-backup(index);
+                                        }
                                     }
                                 }
                             }
-                        }
-                        Rectangle { height: 1px; background: Theme.line; }
+                            Rectangle { height: 1px; background: Theme.line; }
 
-                        Text { text: "更新"; font-size: 12px; font-weight: 600; color: Theme.text3; }
-                        Text { text: root.version-text; font-size: 12px; color: Theme.text2; }
-                        if root.update-text != "" : Text {
-                            text: root.update-text;
-                            font-size: 12px;
-                            color: Theme.text3;
-                            wrap: word-wrap;
-                        }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Btn { label: "检查更新"; pad-x: 10px; font-size: 12px; clicked => { root.check-update(); } }
-                            if root.update-ready : Btn {
-                                label: "下载更新";
-                                primary: true;
-                                pad-x: 10px;
-                                font-size: 12px;
-                                clicked => { root.download-update(); }
-                            }
-                        }
-
-                        Rectangle { height: 1px; background: Theme.line; }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                spacing: 2px;
-                                Text { text: "完全退出"; font-size: 14px; font-weight: 600; color: Theme.text; }
-                                Text {
-                                    text: "退出后不会再弹出任何提醒，点托盘图标可重新启动";
+                            Text { text: "数据与日志"; font-size: 12px; font-weight: 600; color: Theme.text3; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Btn {
+                                    label: "打开数据目录";
+                                    pad-x: 10px;
                                     font-size: 12px;
-                                    color: Theme.text3;
-                                    wrap: word-wrap;
+                                    clicked => { root.open-data-dir(); }
+                                }
+                                Btn {
+                                    label: root.log-open ? "收起日志" : "查看日志";
+                                    pad-x: 10px;
+                                    font-size: 12px;
+                                    clicked => { root.toggle-log(); }
                                 }
                             }
-                            Btn {
-                                label: "退出程序";
-                                danger: true;
-                                pad-x: 10px;
+                            if root.data-dir-status != "" : Text {
+                                text: root.data-dir-status;
                                 font-size: 12px;
-                                clicked => { root.quit(); }
+                                color: Theme.text3;
+                                wrap: word-wrap;
+                            }
+                            // 日志只读，直接把文件尾部贴出来，够排查问题用。
+                            if root.log-open : Rectangle {
+                                height: 150px;
+                                border-radius: 6px;
+                                background: Theme.seg;
+                                Text {
+                                    x: 6px;
+                                    y: 6px;
+                                    width: parent.width - 12px;
+                                    height: parent.height - 12px;
+                                    text: root.log-text;
+                                    font-size: 11px;
+                                    font-family: root.mono-font;
+                                    color: Theme.text2;
+                                    wrap: char-wrap;
+                                    overflow: elide;
+                                    vertical-alignment: bottom;
+                                }
+                            }
+
+                            Text { text: "更新"; font-size: 12px; font-weight: 600; color: Theme.text3; }
+                            Text { text: root.version-text; font-size: 12px; color: Theme.text2; }
+                            if root.update-text != "" : Text {
+                                text: root.update-text;
+                                font-size: 12px;
+                                color: Theme.text3;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Btn { label: "检查更新"; pad-x: 10px; font-size: 12px; clicked => { root.check-update(); } }
+                                if root.update-ready : Btn {
+                                    label: "下载更新";
+                                    primary: true;
+                                    pad-x: 10px;
+                                    font-size: 12px;
+                                    clicked => { root.download-update(); }
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: Theme.line; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 2px;
+                                    Text { text: "完全退出"; font-size: 14px; font-weight: 600; color: Theme.text; }
+                                    Text {
+                                        text: "退出后不会再弹出任何提醒，点托盘图标可重新启动";
+                                        font-size: 12px;
+                                        color: Theme.text3;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                                Btn {
+                                    label: "退出程序";
+                                    danger: true;
+                                    pad-x: 10px;
+                                    font-size: 12px;
+                                    clicked => { root.quit(); }
+                                }
                             }
                         }
-                    }
+                        }
                 }
             }
 

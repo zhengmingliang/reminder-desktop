@@ -398,7 +398,12 @@ pub fn list_texts(reminder: &Reminder, now: DateTime<Local>) -> ListText {
     let (badge, badge_kind) = if reminder.snooze_until_ms.is_some() && reminder.enabled {
         ("稍后", "snooze")
     } else if reminder.status == Status::Fired {
-        ("已触发", "fired")
+        // 点过「知道了」的是已完成，直接关掉弹窗的只算已触发。
+        if reminder.acknowledged_at_ms.is_some() {
+            ("已完成", "done")
+        } else {
+            ("已触发", "fired")
+        }
     } else if !reminder.enabled {
         ("已暂停", "paused")
     } else if matches!(reminder.schedule, Schedule::Cron { .. }) {
@@ -784,8 +789,30 @@ mod tests {
             early_notice_sent_ms: None,
             occurrence_count: 0,
             skip_occurrence_ms: None,
+            acknowledged_at_ms: None,
             deleted_at_ms: None,
         }
+    }
+
+    /// 一次性提醒触发后：点过「知道了」是已完成，直接关掉弹窗的只算已触发。
+    #[test]
+    fn fired_badge_splits_acknowledged_and_ignored() {
+        let now = fixed(2026, 10, 20, 10, 0, 0);
+        let mut item = sample(
+            Schedule::At { fire_at_ms: now.timestamp_millis() },
+            true,
+            Status::Fired,
+        );
+        let texts = list_texts(&item, now);
+        assert_eq!(texts.badge, "已触发");
+        assert_eq!(texts.badge_kind, "fired");
+
+        item.acknowledged_at_ms = Some(now.timestamp_millis());
+        let texts = list_texts(&item, now);
+        assert_eq!(texts.badge, "已完成");
+        assert_eq!(texts.badge_kind, "done");
+        assert!(item.acknowledged_on(now));
+        assert!(!item.acknowledged_on(fixed(2026, 10, 21, 10, 0, 0)));
     }
 
     #[test]

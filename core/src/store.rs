@@ -105,6 +105,17 @@ impl Store {
         self.write_all()
     }
 
+    /// 记下用户在弹窗里点过「知道了」。直接关掉弹窗不算，列表据此区分「看过了」和「被关掉」。
+    /// 条目已经不存在时静默返回，弹窗可能指向刚被删掉的提醒。
+    pub fn acknowledge(&mut self, id: &str, now_ms: i64) -> Result<(), String> {
+        self.ensure_writable()?;
+        let Some(item) = self.reminders.iter_mut().find(|item| item.id == id) else {
+            return Ok(());
+        };
+        item.acknowledged_at_ms = Some(now_ms);
+        self.write_all()
+    }
+
     /// 彻底删除：从文件里真正移除，不可恢复。
     pub fn purge(&mut self, id: &str) -> Result<(), String> {
         self.ensure_writable()?;
@@ -623,6 +634,26 @@ mod tests {
 
     /// 回收站闭环：软删 → 恢复（Cron 不补报）→ 彻底删除 → 过期清理 → 清空。
     #[test]
+    /// 点过「知道了」的确认时间要落盘，重开程序还在；条目不存在时静默返回。
+    #[test]
+    fn acknowledge_persists_and_survives_reload() {
+        let path = temp_path("ack");
+        let mut store = Store::open(path.clone());
+        let item = one();
+        let id = item.id.clone();
+        store.upsert(item).unwrap();
+        assert!(store.reminders[0].acknowledged_at_ms.is_none());
+
+        let at = 1_800_000_000_000i64;
+        store.acknowledge(&id, at).unwrap();
+        assert_eq!(store.reminders[0].acknowledged_at_ms, Some(at));
+
+        let mut reloaded = Store::open(path);
+        assert_eq!(reloaded.reminders[0].acknowledged_at_ms, Some(at));
+        // 弹窗可能指向刚被删掉的提醒，这种情况不该报错。
+        assert!(reloaded.acknowledge("not-there", at).is_ok());
+    }
+
     fn trash_roundtrip_restore_purge_and_expiry() {
         let path = temp_path("trash");
         let mut store = Store::open(path.clone());

@@ -134,6 +134,9 @@ pub struct Reminder {
     /// 要跳过的触发点（毫秒）。到点时不弹窗，只把计划推进过这一点。
     #[serde(default)]
     pub skip_occurrence_ms: Option<i64>,
+    /// 最近一次在弹窗里点「知道了」的时间（毫秒）。用来区分「看过了」和「被关掉」。
+    #[serde(default)]
+    pub acknowledged_at_ms: Option<i64>,
     /// 移入回收站的时间（毫秒）。None 表示还在正常列表里；回收站保留期到后彻底清除。
     #[serde(default)]
     pub deleted_at_ms: Option<i64>,
@@ -143,6 +146,12 @@ impl Reminder {
     /// 是否已移入回收站。调度、列表、统计都要跳过这类条目。
     pub fn is_deleted(&self) -> bool {
         self.deleted_at_ms.is_some()
+    }
+
+    /// 是否在某一天被确认过。「今日已完成」用它挑当天处理掉的条目。
+    pub fn acknowledged_on(&self, day: DateTime<Local>) -> bool {
+        self.acknowledged_at_ms
+            .is_some_and(|ms| millis_to_local(ms).date_naive() == day.date_naive())
     }
 
     pub fn to_draft(&self) -> Draft {

@@ -567,6 +567,14 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {
         let session = session.clone();
         move || session.clear_missed()
     });
+    ui.on_open_data_dir({
+        let session = session.clone();
+        move || session.open_data_dir()
+    });
+    ui.on_toggle_log({
+        let session = session.clone();
+        move || session.toggle_log()
+    });
     ui.on_quit({
         let session = session.clone();
         move || {
@@ -1966,6 +1974,50 @@ impl Session {
         *self.backups.borrow_mut() = files;
     }
 
+    /// 弹窗里点了「知道了」：记下确认时间，列表据此区分「看过了」和「被关掉」。
+    fn acknowledge(&self, id: &str) {
+        let now = Local::now().timestamp_millis();
+        if let Err(error) = lock_store(&self.store).acknowledge(id, now) {
+            self.log.log("WARN", &format!("记录确认状态失败：{error}"));
+            return;
+        }
+        self.refresh_list();
+    }
+
+    /// 用系统文件管理器打开数据目录，方便用户自己取备份或看日志。
+    fn open_data_dir(&self) {
+        match crate::update::open_in_file_manager(&self.data_dir) {
+            Ok(()) => {
+                if let Some(ui) = self.ui.upgrade() {
+                    ui.set_data_dir_status("".into());
+                }
+            }
+            Err(error) => {
+                self.log.log("WARN", &format!("打开数据目录失败：{error}"));
+                if let Some(ui) = self.ui.upgrade() {
+                    ui.set_data_dir_status(
+                        format!("打不开：{error}；目录是 {}", self.data_dir.display()).into(),
+                    );
+                }
+            }
+        }
+    }
+
+    /// 展开就重读一次日志尾部，收起就把内容清掉。
+    fn toggle_log(&self) {
+        let Some(ui) = self.ui.upgrade() else {
+            return;
+        };
+        if ui.get_log_open() {
+            ui.set_log_open(false);
+            ui.set_log_text("".into());
+            return;
+        }
+        let text = read_log_tail(&self.data_dir.join("app.log"));
+        ui.set_log_text(text.into());
+        ui.set_log_open(true);
+    }
+
     fn ask_restore(&self, index: i32) {
         let Some(path) = usize::try_from(index)
             .ok()
@@ -2157,13 +2209,18 @@ impl Session {
         let total = active.len();
         let trash_total = store.reminders.len() - total;
         let today = now.date_naive();
+        // 「今天已触发」只数触发了还没确认的，点过「知道了」的归到「今天已完成」，
+        // 两边加起来就是今天真正弹过的条数。
         let today_fired = active
             .iter()
             .filter(|item| {
-                item.last_fired_at_ms
-                    .is_some_and(|ms| millis_to_local(ms).date_naive() == today)
+                bucket(item) == "fired"
+                    && item
+                        .last_fired_at_ms
+                        .is_some_and(|ms| millis_to_local(ms).date_naive() == today)
             })
             .count();
+        let today_done = active.iter().filter(|item| item.acknowledged_on(now)).count();
         let due_today = active
             .iter()
             .filter(|item| bucket(item) == "pending")
@@ -2177,6 +2234,7 @@ impl Session {
         ui.set_tab_pending(pending.to_string().into());
         ui.set_tab_today(due_today.to_string().into());
         ui.set_tab_fired(today_fired.to_string().into());
+        ui.set_tab_done(today_done.to_string().into());
         ui.set_tab_paused(paused.to_string().into());
         ui.set_footer_text(format!("共 {total} 条提醒 · 待触发 {pending} 条").into());
         let multi = self.multi_selected.borrow().clone();
@@ -2450,8 +2508,14 @@ impl Session {
         let repeat_minutes = self.repeat_minutes.get();
         popup.set_repeat_minutes(i32::try_from(repeat_minutes).unwrap_or(0));
 
+        // 「知道了」才算确认；点窗口关闭按钮走的是 close_requested，不写确认时间。
+        let session_for_ack = self.clone();
+        let ack_id = notice.id.clone();
         let dismiss_popups = self.popups.clone();
-        popup.on_dismiss(move || dismiss_popup(&dismiss_popups, id, true));
+        popup.on_dismiss(move || {
+            session_for_ack.acknowledge(&ack_id);
+            dismiss_popup(&dismiss_popups, id, true);
+        });
         let popups = self.popups.clone();
         let session_for_snooze = self.clone();
         let reminder_id = notice.id.clone();
@@ -3176,6 +3240,27 @@ fn build_reminder_mapped(
 
 const BACKUP_MENU_LIMIT: usize = 5;
 
+/// 设置面板里「查看日志」最多显示的行数与字符数，避免拉出一整份日志。
+const LOG_TAIL_LINES: usize = 40;
+const LOG_TAIL_CHARS: usize = 3000;
+
+/// 读日志文件尾部。面板里看最近几十行就够定位问题，读全量没意义。
+fn read_log_tail(path: &Path) -> String {
+    let Ok(bytes) = fs::read(path) else {
+        return "（暂无日志）".into();
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(LOG_TAIL_LINES);
+    let tail: String = lines[start..].join("\n");
+    let count = tail.chars().count();
+    if count > LOG_TAIL_CHARS {
+        tail.chars().skip(count - LOG_TAIL_CHARS).collect()
+    } else {
+        tail
+    }
+}
+
 /// 备份文件名形如 reminders-20260101-120000123.json，显示时转成可读时间。
 fn backup_label(path: &Path) -> String {
     let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
@@ -3215,7 +3300,12 @@ fn contains_query(reminder: &Reminder, query: &str) -> bool {
 
 fn bucket(reminder: &Reminder) -> &'static str {
     if reminder.status == Status::Fired {
-        "fired"
+        // 点过「知道了」的单独算一组，和触发了但没处理的分开。
+        if reminder.acknowledged_at_ms.is_some() {
+            "done"
+        } else {
+            "fired"
+        }
     } else if !reminder.enabled {
         "paused"
     } else {
