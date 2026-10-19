@@ -715,4 +715,87 @@ mod tests {
         assert_eq!(reminder.status, Status::Recurring);
         assert!(due_reminders(std::slice::from_ref(&reminder), later).is_empty());
     }
+
+    #[test]
+    fn sleep_wake_backfills_a_much_later_one_shot_and_rechecks_immediately() {
+        let scheduled = fixed(2026, 10, 17, 9, 0, 0);
+        let wake = fixed(2026, 10, 17, 18, 30, 0); // 电脑睡了 9.5 小时
+        let reminder = sample(
+            Schedule::At { fire_at_ms: now_ms(scheduled) },
+            true,
+            Status::Pending,
+        );
+        let hits = due_reminders(std::slice::from_ref(&reminder), wake);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].late, "唤醒时已过点，应标记为错过");
+        assert_eq!(hits[0].occurrence_ms, now_ms(scheduled), "补发仍显示原定时刻");
+        // 调度线程不该再长睡：过期的提醒应让下一次唤醒立刻返回 now。
+        assert_eq!(next_wake(std::slice::from_ref(&reminder), wake), Some(wake));
+    }
+
+    #[test]
+    fn offline_minute_cron_collapses_to_latest_and_caps_the_count() {
+        let origin = fixed(2026, 10, 10, 9, 0, 0);
+        let now = origin + Duration::days(5);
+        let mut reminder = sample(
+            Schedule::Cron { expression: "* * * * *".into() },
+            true,
+            Status::Recurring,
+        );
+        reminder.created_at_ms = now_ms(origin);
+        reminder.last_occurrence_ms = Some(now_ms(origin));
+        let hits = due_reminders(std::slice::from_ref(&reminder), now);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].missed, 100, "长期离线后错过次数封顶，不逐条补发");
+        let at = millis_to_local(hits[0].occurrence_ms);
+        assert!(at <= now && now - at < Duration::seconds(60), "只取最近一次");
+    }
+
+    #[test]
+    fn clock_jump_backward_does_not_fire_a_pending_one_shot_early() {
+        let armed = fixed(2026, 10, 17, 12, 0, 0);
+        let reminder = sample(
+            Schedule::At { fire_at_ms: now_ms(armed) },
+            true,
+            Status::Pending,
+        );
+        let earlier = armed - Duration::hours(1); // 手动把时间往回调了一小时
+        assert!(due_reminders(std::slice::from_ref(&reminder), earlier).is_empty());
+        assert_eq!(
+            next_wake(std::slice::from_ref(&reminder), earlier),
+            Some(armed),
+            "回拨后应等到原定时刻，而不是立刻触发"
+        );
+        assert_eq!(due_reminders(std::slice::from_ref(&reminder), armed).len(), 1);
+    }
+
+    #[test]
+    fn clock_jump_forward_marks_the_one_shot_late() {
+        let armed = fixed(2026, 10, 17, 12, 0, 0);
+        let reminder = sample(
+            Schedule::At { fire_at_ms: now_ms(armed) },
+            true,
+            Status::Pending,
+        );
+        let jumped = armed + Duration::hours(2); // 手动把时间调快了两小时
+        let hits = due_reminders(std::slice::from_ref(&reminder), jumped);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].late);
+    }
+
+    #[test]
+    fn delay_stores_absolute_time_so_a_timezone_shift_does_not_move_it() {
+        let at = fixed(2026, 10, 17, 12, 0, 0);
+        let reminder = sample(
+            Schedule::Delay { minutes: 5, fire_at_ms: now_ms(at) },
+            true,
+            Status::Pending,
+        );
+        // 换时区或夏令时只改本地显示，不改毫秒时间戳，触发点保持不变。
+        assert!(due_reminders(std::slice::from_ref(&reminder), at - Duration::seconds(1)).is_empty());
+        let hits = due_reminders(std::slice::from_ref(&reminder), at);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].occurrence_ms, now_ms(at));
+        assert!(!hits[0].late);
+    }
 }
