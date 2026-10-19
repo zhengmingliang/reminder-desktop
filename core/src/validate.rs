@@ -196,6 +196,8 @@ pub fn build_reminder(
         early_notice_sent_ms: None,
         occurrence_count,
         skip_occurrence_ms,
+        // 新建/编辑总是回到正常列表；恢复走 store 的 restore_deleted。
+        deleted_at_ms: None,
     })
 }
 

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::Reminder;
+use crate::model::{Reminder, Schedule};
 
 const VERSION: u32 = 1;
 
@@ -71,7 +71,42 @@ impl Store {
         self.write_all()
     }
 
-    pub fn delete(&mut self, id: &str) -> Result<(), String> {
+    /// 移入回收站（软删除）：条目保留在文件里，标记删除时间，不再参与调度与列表。
+    pub fn delete(&mut self, id: &str, now_ms: i64) -> Result<(), String> {
+        self.ensure_writable()?;
+        let Some(index) = self.reminders.iter().position(|item| item.id == id) else {
+            return Err("这条提醒已经不存在".into());
+        };
+        if self.reminders[index].deleted_at_ms.is_none() {
+            self.reminders[index].deleted_at_ms = Some(now_ms);
+            self.write_all()?;
+        }
+        Ok(())
+    }
+
+    /// 从回收站恢复：清除删除标记。Cron 项把周期起点挪到现在，
+    /// 并清掉稍后/跳过/提前记录，恢复后不会把删除期间错过的周期补报出来。
+    pub fn restore_deleted(&mut self, id: &str, now_ms: i64) -> Result<(), String> {
+        self.ensure_writable()?;
+        let Some(item) = self.reminders.iter_mut().find(|item| item.id == id) else {
+            return Err("这条提醒已经不存在".into());
+        };
+        if item.deleted_at_ms.is_none() {
+            return Err("这条提醒不在回收站里".into());
+        }
+        item.deleted_at_ms = None;
+        if matches!(item.schedule, Schedule::Cron { .. }) {
+            item.last_occurrence_ms = Some(now_ms);
+        }
+        item.skip_occurrence_ms = None;
+        item.snooze_until_ms = None;
+        item.early_notice_sent_ms = None;
+        item.updated_at_ms = now_ms;
+        self.write_all()
+    }
+
+    /// 彻底删除：从文件里真正移除，不可恢复。
+    pub fn purge(&mut self, id: &str) -> Result<(), String> {
         self.ensure_writable()?;
         let before = self.reminders.len();
         self.reminders.retain(|item| item.id != id);
@@ -79,6 +114,46 @@ impl Store {
             return Err("这条提醒已经不存在".into());
         }
         self.write_all()
+    }
+
+    /// 清空回收站，返回清除的条数。
+    pub fn empty_trash(&mut self) -> Result<usize, String> {
+        self.ensure_writable()?;
+        let before = self.reminders.len();
+        self.reminders.retain(|item| item.deleted_at_ms.is_none());
+        let purged = before - self.reminders.len();
+        if purged > 0 {
+            self.write_all()?;
+        }
+        Ok(purged)
+    }
+
+    /// 彻底删除删除时间超过保留期的条目，返回清除的条数。保留期为 0 表示不自动清理。
+    pub fn purge_expired(&mut self, now_ms: i64, keep_days: u32) -> Result<usize, String> {
+        self.ensure_writable()?;
+        if keep_days == 0 {
+            return Ok(0);
+        }
+        let horizon = now_ms - i64::from(keep_days) * 86_400_000;
+        let before = self.reminders.len();
+        self.reminders.retain(|item| {
+            item.deleted_at_ms.is_none_or(|deleted_at| deleted_at > horizon)
+        });
+        let purged = before - self.reminders.len();
+        if purged > 0 {
+            self.write_all()?;
+        }
+        Ok(purged)
+    }
+
+    /// 正常列表里的条数（不含回收站），新建上限按这个算。
+    pub fn active_count(&self) -> usize {
+        self.reminders.iter().filter(|item| item.deleted_at_ms.is_none()).count()
+    }
+
+    /// 回收站里的条数。
+    pub fn trash_count(&self) -> usize {
+        self.reminders.len() - self.active_count()
     }
 
     pub fn save(&mut self) -> Result<(), String> {
@@ -354,6 +429,68 @@ mod tests {
         build_reminder(&draft, None, Local::now(), 0).unwrap()
     }
 
+    /// 用一份手写的旧版数据文件验证：没有 deleted_at_ms 字段也能读（向后兼容），
+    /// 带 deleted_at_ms 的条目读进来后在回收站里，启动清理会按保留期处理。
+    #[test]
+    fn legacy_file_without_deleted_at_still_loads_and_purges_expired() {
+        let text = r#"{
+  "version": 1,
+  "reminders": [
+    {
+      "id": "legacy-active",
+      "title": "正常提醒",
+      "body": "",
+      "schedule": { "kind": "delay", "minutes": 30, "fire_at_ms": 9999999999999 },
+      "enabled": true,
+      "status": "pending",
+      "sound_enabled": false,
+      "sound_path": null,
+      "created_at_ms": 1760000000000,
+      "updated_at_ms": 1760000000000,
+      "last_fired_at_ms": null,
+      "snooze_until_ms": null,
+      "early_minutes": 0,
+      "early_notice_sent_ms": null,
+      "occurrence_count": 0,
+      "skip_occurrence_ms": null
+    },
+    {
+      "id": "legacy-deleted",
+      "title": "很久前删除的提醒",
+      "body": "",
+      "schedule": { "kind": "cron", "expression": "0 9 * * 1-5" },
+      "enabled": true,
+      "status": "recurring",
+      "sound_enabled": false,
+      "sound_path": null,
+      "created_at_ms": 1760000000000,
+      "updated_at_ms": 1760000000000,
+      "last_fired_at_ms": null,
+      "snooze_until_ms": null,
+      "early_minutes": 0,
+      "early_notice_sent_ms": null,
+      "occurrence_count": 0,
+      "skip_occurrence_ms": null,
+      "deleted_at_ms": 946684800000
+    }
+  ]
+}"#;
+        let path = temp_path("legacy");
+        fs::write(&path, text).unwrap();
+        let mut store = Store::open(path.clone());
+        assert_eq!(store.reminders.len(), 2, "旧数据要能原样读进来");
+        assert!(store.reminders[0].deleted_at_ms.is_none(), "老数据没有删除标记");
+        assert!(store.reminders[1].is_deleted());
+        assert_eq!(store.active_count(), 1);
+
+        // 启动清理：删除标记超过保留期的应被彻底删除并落盘。
+        let now = 1_800_000_000_000i64;
+        assert_eq!(store.purge_expired(now, 30).unwrap(), 1);
+        let reloaded = Store::open(path);
+        assert_eq!(reloaded.reminders.len(), 1);
+        assert_eq!(reloaded.reminders[0].id, "legacy-active");
+    }
+
     #[test]
     fn roundtrip_and_backup_survive_reload() {
         let path = temp_path("round");
@@ -368,8 +505,13 @@ mod tests {
         assert_eq!(loaded.reminders[0].id, id);
         let copy = loaded.backup().unwrap();
         assert!(copy.exists());
-        store.delete(&id).unwrap();
-        assert!(Store::open(path).reminders.is_empty());
+        store.delete(&id, 1_000).unwrap();
+        // 软删除：条目留在文件里，带删除标记；重开也能看到。
+        assert_eq!(store.active_count(), 0);
+        assert_eq!(store.trash_count(), 1);
+        let reloaded = Store::open(path);
+        assert_eq!(reloaded.reminders.len(), 1);
+        assert_eq!(reloaded.reminders[0].deleted_at_ms, Some(1_000));
     }
 
     #[test]
@@ -467,7 +609,7 @@ mod tests {
         let id = reminder.id.clone();
         store.upsert(reminder).unwrap();
         let saved = store.backup().unwrap();
-        store.delete(&id).unwrap();
+        store.purge(&id).unwrap();
         assert!(store.reminders.is_empty());
         let count = store.restore(&saved).unwrap();
         assert_eq!(count, 1);
@@ -477,5 +619,66 @@ mod tests {
         assert_eq!(backups.len(), 2);
         assert_ne!(backups[0], saved);
         assert!(read_data(&backups[0]).unwrap().reminders.is_empty());
+    }
+
+    /// 回收站闭环：软删 → 恢复（Cron 不补报）→ 彻底删除 → 过期清理 → 清空。
+    #[test]
+    fn trash_roundtrip_restore_purge_and_expiry() {
+        let path = temp_path("trash");
+        let mut store = Store::open(path.clone());
+        let now = 1_800_000_000_000i64;
+
+        // Cron 项：恢复后周期起点必须挪到现在，残留的稍后/跳过记录清掉。
+        let mut draft = Draft::blank();
+        draft.title = "日报".into();
+        draft.kind = crate::model::Kind::Cron;
+        draft.cron = "0 9 * * 1-5".into();
+        let mut cron = build_reminder(&draft, None, Local::now(), 0).unwrap();
+        cron.created_at_ms = now - 3_600_000;
+        cron.last_occurrence_ms = Some(now - 3_600_000);
+        cron.snooze_until_ms = Some(now - 60_000);
+        cron.skip_occurrence_ms = Some(now + 86_400_000);
+        let cron_id = cron.id.clone();
+        store.upsert(cron).unwrap();
+
+        let plain = one();
+        let plain_id = plain.id.clone();
+        store.upsert(plain).unwrap();
+
+        store.delete(&cron_id, now).unwrap();
+        store.delete(&plain_id, now).unwrap();
+        assert_eq!(store.trash_count(), 2);
+        assert_eq!(store.active_count(), 0);
+        assert!(
+            store.delete(&cron_id, now).is_ok(),
+            "重复删除同一回收站条目应当作无事发生"
+        );
+
+        // 恢复 Cron：删除标记清掉，last_occurrence_ms 重置为 now，周期从现在起算。
+        store.restore_deleted(&cron_id, now + 60_000).unwrap();
+        let restored = store.reminders.iter().find(|item| item.id == cron_id).unwrap();
+        assert!(restored.deleted_at_ms.is_none());
+        assert_eq!(restored.last_occurrence_ms, Some(now + 60_000));
+        assert_eq!(restored.snooze_until_ms, None);
+        assert_eq!(restored.skip_occurrence_ms, None);
+
+        // 彻底删除。
+        store.purge(&plain_id).unwrap();
+        assert_eq!(store.reminders.len(), 1);
+        assert!(store.purge(&plain_id).is_err(), "再删不存在的条目要报错");
+
+        // 过期清理：删除 31 天前的被清，29 天前的保留；保留期 0 表示不清理。
+        store.delete(&cron_id, now - 29 * 86_400_000).unwrap();
+        let mut old = one();
+        old.deleted_at_ms = Some(now - 31 * 86_400_000 - 1);
+        store.upsert(old).unwrap();
+        assert_eq!(store.purge_expired(now, 0).unwrap(), 0, "保留期 0 不清理");
+        assert_eq!(store.purge_expired(now, 30).unwrap(), 1);
+        assert_eq!(store.trash_count(), 1, "29 天前删除的还在保留期内");
+
+        // 清空回收站。
+        assert_eq!(store.empty_trash().unwrap(), 1);
+        assert_eq!(store.empty_trash().unwrap(), 0);
+        assert!(store.reminders.is_empty());
     }
 }

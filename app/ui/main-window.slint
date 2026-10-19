@@ -16,8 +16,10 @@ export struct ReminderRow {
     badge: string,
     badge-kind: string,
     selected: bool,
+    checked: bool,
     sound-on: bool,
     is-last-in-group: bool,
+    deleted-at-text: string,
 }
 
 export struct DirEntry {
@@ -134,14 +136,46 @@ component TitleBar inherits Rectangle {
     }
 }
 
+// 回收站行内的小文字按钮（恢复 / 彻底删除）：24px 高，悬停浅底。
+component MiniTextBtn inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger: false;
+    callback clicked();
+
+    width: btn-text.preferred-width + 16px;
+    height: 24px;
+    border-radius: 6px;
+    background: ta.has-hover ? (root.danger ? Theme.danger-bg : Theme.hover) : transparent;
+
+    btn-text := Text {
+        text: root.label;
+        font-size: 12px;
+        color: root.danger ? Theme.danger : Theme.text2;
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 // 侧栏列表行：图标 20 + 标题/摘要 + 右侧等宽时间；选中主色浅底。
+// 三种形态：普通行（点击进编辑）、多选/回收站行（复选框 + 点击勾选）、回收站行（右侧恢复/彻底删除）。
 component ReminderItem inherits Rectangle {
     in property <ReminderRow> item;
     in property <string> mono-family;
     in property <bool> shown: true;
+    in property <bool> select-mode: false;
+    in property <bool> trash-mode: false;
     callback picked(string);
+    callback check-toggled(string);
+    callback multi-picked(string, bool, bool);
+    callback trash-restore(string);
+    callback trash-purge(string);
 
     property <string> kind: root.item.badge-kind;
+    property <bool> row-select: root.select-mode || root.trash-mode;
+    property <bool> checked: root.item.checked;
     property <bool> upcoming: root.kind != "fired" && root.kind != "paused";
     property <bool> fired: root.kind == "fired";
     property <bool> paused: root.kind == "paused";
@@ -157,12 +191,36 @@ component ReminderItem inherits Rectangle {
     visible: root.shown;
     border-radius: 8px;
     border-width: 1px;
-    border-color: root.item.selected ? Theme.pri-line : transparent;
-    background: root.item.selected
+    border-color: root.item.selected || root.checked ? Theme.pri-line : transparent;
+    background: root.item.selected || root.checked
         ? Theme.pri-tint
         : row-area.has-hover
             ? Theme.hover
             : transparent;
+
+    // 行点击区放在内容层下面：复选框和行内小按钮在它上面，能先收到点击。
+    property <bool> gesture-multi: false;
+    row-area := TouchArea {
+        mouse-cursor: pointer;
+        // Ctrl/Shift 按下时记下手势并立刻走多选；随后的 clicked 不再当作打开编辑。
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && (event.modifiers.control || event.modifiers.shift) {
+                root.gesture-multi = true;
+                root.multi-picked(root.item.id, event.modifiers.control, event.modifiers.shift);
+            }
+        }
+        clicked => {
+            if root.gesture-multi {
+                root.gesture-multi = false;
+                return;
+            }
+            if root.row-select {
+                root.multi-picked(root.item.id, false, false);
+                return;
+            }
+            root.picked(root.item.id);
+        }
+    }
 
     HorizontalLayout {
         padding-left: 10px;
@@ -171,11 +229,18 @@ component ReminderItem inherits Rectangle {
         padding-bottom: 10px;
         spacing: 10px;
 
+        // 第一列：多选/回收站时是复选框，平时是状态图标。
         Rectangle {
             width: 20px;
             height: 100%;
             horizontal-stretch: 0;
-            NamedIcon {
+            if root.row-select : CheckBox {
+                checked: root.item.checked;
+                toggled => { root.check-toggled(root.item.id); }
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+            if !root.row-select : NamedIcon {
                 icon-name: root.icon-name;
                 s: 16px;
                 x: (parent.width - self.width) / 2;
@@ -202,7 +267,20 @@ component ReminderItem inherits Rectangle {
             }
         }
 
-        if root.upcoming : Text {
+        if root.trash-mode : HorizontalLayout {
+            alignment: center;
+            spacing: 4px;
+            MiniTextBtn {
+                label: "恢复";
+                clicked => { root.trash-restore(root.item.id); }
+            }
+            MiniTextBtn {
+                label: "彻底删除";
+                danger: true;
+                clicked => { root.trash-purge(root.item.id); }
+            }
+        }
+        if !root.trash-mode && root.upcoming : Text {
             text: root.item.distance-text != "" ? root.item.distance-text : root.item.when-text;
             font-family: root.mono-family;
             font-size: 12px;
@@ -211,18 +289,13 @@ component ReminderItem inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
         }
-        if root.fired : Text {
+        if !root.trash-mode && root.fired : Text {
             text: "重新启用";
             font-size: 12px;
             font-weight: 500;
             color: Theme.warn-text;
             vertical-alignment: center;
         }
-    }
-
-    row-area := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.picked(root.item.id); }
     }
 }
 
@@ -554,6 +627,12 @@ export component MainWindow inherits Window {
     in-out property <string> dnd-status: "";
     // 关闭按钮行为：true 隐藏到托盘后台运行，false 直接退出。
     in-out property <bool> close-to-tray-on: true;
+    // 回收站与多选：trash-mode 切换列表数据源，select-mode 控制普通列表的复选框。
+    in-out property <bool> trash-mode: false;
+    in-out property <bool> select-mode: false;
+    in-out property <int> selected-count: 0;
+    in-out property <string> trash-count: "0";
+    in-out property <int> trash-days: 30;
 
     callback search-changed(string);
     callback filter-changed(string);
@@ -570,6 +649,7 @@ export component MainWindow inherits Window {
     callback save();
     callback revert();
     callback delete-request();
+    callback duplicate-request();
     callback skip-next();
     callback backup();
     callback preview-popup();
@@ -594,6 +674,22 @@ export component MainWindow inherits Window {
     callback dnd-end-edited(string);
     callback dnd-mode-changed(int);
     callback close-to-tray-changed(bool);
+    // 回收站 / 多选回调。
+    callback trash-open();
+    callback trash-close();
+    callback check-toggled(string);
+    callback multi-picked(string, bool, bool);
+    callback multi-select-all();
+    callback multi-cancel();
+    callback multi-enable();
+    callback multi-disable();
+    callback multi-delete();
+    callback trash-restore(string);
+    callback trash-purge(string);
+    callback trash-restore-selected();
+    callback trash-purge-selected();
+    callback trash-empty();
+    callback trash-days-changed(float);
     callback close-requested();
     callback restore-backup(int);
     callback check-update();
@@ -608,8 +704,8 @@ export component MainWindow inherits Window {
     property <bool> custom-cron: false;
     property <bool> dirty: false;
 
-    // 顶栏「下一次」用第一条待触发记录。
-    property <bool> has-next: root.rows.length > 0;
+    // 顶栏「下一次」用第一条待触发记录；回收站里不显示（Rust 侧控制）。
+    in-out property <bool> has-next: root.rows.length > 0 && !root.trash-mode;
 
     FocusScope {
         width: 100%;
@@ -943,38 +1039,165 @@ export component MainWindow inherits Window {
                                     }
                                 }
 
-                                // 搜索
-                                Rectangle {
+                                // 搜索（回收站模式换成提示条，避免搜索条件叠加删除过滤）。
+                                // 搜索行用 visible 而不是 if：保持 search-box 常驻，Ctrl+F 才能聚焦到它。
+                                if root.trash-mode : Rectangle {
                                     height: 32px;
-                                    search-box := Field {
+                                    border-radius: 8px;
+                                    background: Theme.sub;
+                                    Text {
                                         width: 100%;
-                                        height: 32px;
-                                        icon-name: "search-ph";
-                                        pad-left: 34px;
-                                        pad-right: 60px;
-                                        font-size: 13px;
-                                        placeholder: "搜索标题或正文";
-                                        text <=> root.search-text;
-                                        edited(t) => { root.search-changed(t); }
+                                        height: 100%;
+                                        text: "回收站 · 已删除提醒保留 " + root.trash-days + " 天";
+                                        font-size: 12px;
+                                        color: Theme.text3;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        overflow: elide;
                                     }
+                                }
+                                HorizontalLayout {
+                                    visible: !root.trash-mode;
+                                    height: root.trash-mode ? 0px : 32px;
+                                    spacing: 6px;
                                     Rectangle {
-                                        x: parent.width - 8px - 46px;
-                                        y: 6px;
-                                        width: 46px;
-                                        height: 20px;
-                                        border-radius: 4px;
-                                        border-width: 1px;
-                                        border-color: Theme.line;
-                                        background: Theme.bg;
-                                        Text {
+                                        horizontal-stretch: 1;
+                                        search-box := Field {
                                             width: 100%;
-                                            height: 100%;
-                                            text: "Ctrl+F";
-                                            font-family: root.mono-font;
-                                            font-size: 11px;
-                                            color: Theme.text3;
-                                            horizontal-alignment: center;
+                                            height: 32px;
+                                            icon-name: "search-ph";
+                                            pad-left: 34px;
+                                            pad-right: 60px;
+                                            font-size: 13px;
+                                            placeholder: "搜索标题或正文";
+                                            text <=> root.search-text;
+                                            edited(t) => { root.search-changed(t); }
+                                        }
+                                        Rectangle {
+                                            x: parent.width - 8px - 46px;
+                                            y: 6px;
+                                            width: 46px;
+                                            height: 20px;
+                                            border-radius: 4px;
+                                            border-width: 1px;
+                                            border-color: Theme.line;
+                                            background: Theme.bg;
+                                            Text {
+                                                width: 100%;
+                                                height: 100%;
+                                                text: "Ctrl+F";
+                                                font-family: root.mono-font;
+                                                font-size: 11px;
+                                                color: Theme.text3;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                    // 多选入口：进入后每行出现复选框，列表上方浮出批量操作条。
+                                    Chip {
+                                        pill: true;
+                                        chip-height: 28px;
+                                        pad-x: 10px;
+                                        font-size: 12px;
+                                        label: root.select-mode ? "退出多选" : "多选";
+                                        clicked => {
+                                            if root.select-mode {
+                                                root.multi-cancel();
+                                            } else {
+                                                root.select-mode = true;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 批量操作条：多选或回收站时显示，操作只作用于勾选的条目。
+                                if root.select-mode || root.trash-mode : Rectangle {
+                                    height: 36px;
+                                    HorizontalLayout {
+                                        padding-left: 2px;
+                                        padding-right: 2px;
+                                        spacing: 6px;
+                                        Text {
+                                            text: root.trash-mode
+                                                ? "回收站 " + root.trash-count + " 条"
+                                                : (root.selected-count > 0 ? "已选 " + root.selected-count + " 条" : "点击条目开始多选");
+                                            font-size: 12px;
+                                            color: Theme.text2;
                                             vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        Chip {
+                                            pill: true;
+                                            chip-height: 24px;
+                                            pad-x: 8px;
+                                            font-size: 11px;
+                                            label: "全选";
+                                            clicked => { root.multi-select-all(); }
+                                        }
+                                        if !root.trash-mode : Chip {
+                                            pill: true;
+                                            chip-height: 24px;
+                                            pad-x: 8px;
+                                            font-size: 11px;
+                                            label: "启用";
+                                            clicked => { root.multi-enable(); }
+                                        }
+                                        if !root.trash-mode : Chip {
+                                            pill: true;
+                                            chip-height: 24px;
+                                            pad-x: 8px;
+                                            font-size: 11px;
+                                            label: "停用";
+                                            clicked => { root.multi-disable(); }
+                                        }
+                                        if !root.trash-mode : Chip {
+                                            pill: true;
+                                            chip-height: 24px;
+                                            pad-x: 8px;
+                                            font-size: 11px;
+                                            label: "删除";
+                                            clicked => { root.multi-delete(); }
+                                        }
+                                        if root.trash-mode : Chip {
+                                            pill: true;
+                                            chip-height: 24px;
+                                            pad-x: 8px;
+                                            font-size: 11px;
+                                            label: "恢复";
+                                            clicked => { root.trash-restore-selected(); }
+                                        }
+                                        if root.trash-mode : Chip {
+                                            pill: true;
+                                            chip-height: 24px;
+                                            pad-x: 8px;
+                                            font-size: 11px;
+                                            label: "彻底删除";
+                                            clicked => { root.trash-purge-selected(); }
+                                        }
+                                        if root.trash-mode : Chip {
+                                            pill: true;
+                                            chip-height: 24px;
+                                            pad-x: 8px;
+                                            font-size: 11px;
+                                            label: "清空";
+                                            clicked => { root.trash-empty(); }
+                                        }
+                                        Chip {
+                                            pill: true;
+                                            chip-height: 24px;
+                                            pad-x: 8px;
+                                            font-size: 11px;
+                                            dashed: true;
+                                            label: "取消";
+                                            clicked => {
+                                                if root.trash-mode {
+                                                    root.trash-close();
+                                                } else {
+                                                    root.multi-cancel();
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -993,7 +1216,7 @@ export component MainWindow inherits Window {
 
                                     // 分组标题始终全部显示：点一下只保留该组，再点一下恢复全部，
                                     // 否则过滤后其它分组标题一起消失，就没法回到全部了。
-                                    if root.tab-pending != "0" : GroupHeader {
+                                    if root.tab-pending != "0" && !root.trash-mode : GroupHeader {
                                         first: true;
                                         label: "即将触发";
                                         count: root.tab-pending;
@@ -1004,16 +1227,19 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                     for row in root.rows : ReminderItem {
-                                        shown: row.badge-kind != "fired" && row.badge-kind != "paused";
+                                        shown: !root.trash-mode && row.badge-kind != "fired" && row.badge-kind != "paused";
                                         mono-family: root.mono-font;
+                                        select-mode: root.select-mode;
                                         item: row;
                                         picked(id) => {
                                             root.select-reminder(id);
                                             root.main-view = "edit";
                                         }
+                                        check-toggled(id) => { root.check-toggled(id); }
+                                        multi-picked(id, ctrl, shift) => { root.multi-picked(id, ctrl, shift); }
                                     }
 
-                                    if root.tab-fired != "0" : GroupHeader {
+                                    if root.tab-fired != "0" && !root.trash-mode : GroupHeader {
                                         label: "今天已触发";
                                         count: root.tab-fired;
                                         active: root.list-filter == "fired";
@@ -1023,16 +1249,19 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                     for row in root.rows : ReminderItem {
-                                        shown: row.badge-kind == "fired";
+                                        shown: !root.trash-mode && row.badge-kind == "fired";
                                         mono-family: root.mono-font;
+                                        select-mode: root.select-mode;
                                         item: row;
                                         picked(id) => {
                                             root.select-reminder(id);
                                             root.main-view = "edit";
                                         }
+                                        check-toggled(id) => { root.check-toggled(id); }
+                                        multi-picked(id, ctrl, shift) => { root.multi-picked(id, ctrl, shift); }
                                     }
 
-                                    if root.tab-paused != "0" : GroupHeader {
+                                    if root.tab-paused != "0" && !root.trash-mode : GroupHeader {
                                         label: "已停用";
                                         count: root.tab-paused;
                                         active: root.list-filter == "paused";
@@ -1042,13 +1271,28 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                     for row in root.rows : ReminderItem {
-                                        shown: row.badge-kind == "paused";
+                                        shown: !root.trash-mode && row.badge-kind == "paused";
                                         mono-family: root.mono-font;
+                                        select-mode: root.select-mode;
                                         item: row;
                                         picked(id) => {
                                             root.select-reminder(id);
                                             root.main-view = "edit";
                                         }
+                                        check-toggled(id) => { root.check-toggled(id); }
+                                        multi-picked(id, ctrl, shift) => { root.multi-picked(id, ctrl, shift); }
+                                    }
+
+                                    // 回收站行：复选框 + 行内恢复/彻底删除，点击行只做勾选。
+                                    for row in root.rows : ReminderItem {
+                                        shown: root.trash-mode;
+                                        mono-family: root.mono-font;
+                                        trash-mode: true;
+                                        item: row;
+                                        check-toggled(id) => { root.check-toggled(id); }
+                                        multi-picked(id, ctrl, shift) => { root.multi-picked(id, ctrl, shift); }
+                                        trash-restore(id) => { root.trash-restore(id); }
+                                        trash-purge(id) => { root.trash-purge(id); }
                                     }
 
                                     if root.rows.length == 0 : Text {
@@ -1060,6 +1304,72 @@ export component MainWindow inherits Window {
                                         vertical-alignment: center;
                                         wrap: word-wrap;
                                     }
+                                }
+                            }
+
+                            // 回收站入口：显示条数；进入回收站后变为「返回列表」。
+                            Rectangle {
+                                height: 40px;
+                                background: Theme.sub;
+                                trash-entry := Rectangle {
+                                    x: 12px;
+                                    y: 5px;
+                                    width: parent.width - 24px;
+                                    height: 30px;
+                                    border-radius: 6px;
+                                    background: root.trash-mode
+                                        ? Theme.pri-tint
+                                        : trash-ta.has-hover ? Theme.hover : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 8px;
+                                        NamedIcon {
+                                            icon-name: "trash-danger";
+                                            s: 14px;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                        Text {
+                                            text: root.trash-mode ? "返回列表" : "回收站";
+                                            font-size: 12px;
+                                            font-weight: 500;
+                                            color: root.trash-mode ? Theme.pri-text : Theme.text2;
+                                            vertical-alignment: center;
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        if !root.trash-mode && root.trash-count != "0" : Rectangle {
+                                            width: trash-count-text.preferred-width + 12px;
+                                            height: 18px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 9px;
+                                            background: Theme.danger-bg;
+                                            trash-count-text := Text {
+                                                width: 100%;
+                                                height: 100%;
+                                                text: root.trash-count;
+                                                font-size: 11px;
+                                                color: Theme.danger;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                    trash-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            if root.trash-mode {
+                                                root.trash-close();
+                                            } else {
+                                                root.trash-open();
+                                            }
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    y: 0px;
+                                    width: 100%;
+                                    height: 1px;
+                                    background: Theme.line;
                                 }
                             }
 
@@ -2324,6 +2634,14 @@ export component MainWindow inherits Window {
                                         btn-height: 34px;
                                         clicked => { root.delete-request(); }
                                     }
+                                    // 创建副本：以当前提醒为模板开一份未保存的新草稿。
+                                    if root.delete-enabled : Btn {
+                                        transparent: true;
+                                        btn-height: 34px;
+                                        pad-x: 12px;
+                                        label: "创建副本";
+                                        clicked => { root.duplicate-request(); }
+                                    }
                                     Btn {
                                         transparent: true;
                                         btn-height: 34px;
@@ -2573,6 +2891,30 @@ export component MainWindow inherits Window {
                             }
                         }
                         Text { text: "弹窗一直没处理时，每隔一段时间再响一次"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
+                        Rectangle { height: 1px; background: Theme.line; }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "回收站保留期";
+                                font-size: 14px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            trash-days-field := Field {
+                                width: 72px;
+                                field-height: 30px;
+                                font-size: 13px;
+                                mono: true;
+                                mono-family: root.mono-font;
+                                text: "\{root.trash-days}";
+                                placeholder: "30";
+                                edited(t) => { root.trash-days-changed(t.to-float()); }
+                            }
+                        }
+                        Text { text: "已删除的提醒在回收站保留 1-365 天后自动彻底清除"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
                         Rectangle { height: 1px; background: Theme.line; }
 
                         HorizontalLayout {

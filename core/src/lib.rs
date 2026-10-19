@@ -19,7 +19,7 @@ pub use schedule::{
 };
 pub use store::{default_data_dir, Store};
 pub use settings::{
-    in_quiet_hours, load_settings, save_settings, settings_path, valid_hhmm, DndMode, Settings,
-    ThemeMode,
+    clamp_trash_keep_days, in_quiet_hours, load_settings, save_settings, settings_path, valid_hhmm,
+    DndMode, Settings, ThemeMode, DEFAULT_TRASH_KEEP_DAYS,
 };
 pub use validate::{build_reminder, inspect, next_cron_times, FieldError, Report};

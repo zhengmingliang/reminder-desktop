@@ -112,6 +112,9 @@ fn next_cron_after(expression: &str, origin_ms: i64) -> Option<i64> {
 
 /// 下一次触发点（毫秒）。暂停、稍后期间或已完成的一次性提醒返回 None。
 pub fn next_occurrence_ms(reminder: &Reminder) -> Option<i64> {
+    if reminder.is_deleted() {
+        return None;
+    }
     if !reminder.enabled || reminder.snooze_until_ms.is_some() {
         return None;
     }
@@ -181,6 +184,9 @@ pub fn skipped_reminders(reminders: &[Reminder], now: DateTime<Local>) -> Vec<Sk
         let Some(skip_ms) = reminder.skip_occurrence_ms else {
             continue;
         };
+        if reminder.is_deleted() {
+            continue;
+        }
         if skip_ms > now_ms || !reminder.enabled || reminder.snooze_until_ms.is_some() {
             continue;
         }
@@ -202,6 +208,9 @@ pub fn skipped_reminders(reminders: &[Reminder], now: DateTime<Local>) -> Vec<Sk
 }
 
 fn due_one(reminder: &Reminder, now: DateTime<Local>) -> Option<DueHit> {
+    if reminder.is_deleted() {
+        return None;
+    }
     if !reminder.enabled {
         return None;
     }
@@ -330,6 +339,10 @@ fn binary_latest(cron: &Cron, after: DateTime<Local>, now: DateTime<Local>) -> O
 pub fn next_wake(reminders: &[Reminder], now: DateTime<Local>) -> Option<DateTime<Local>> {
     let mut best: Option<DateTime<Local>> = None;
     for reminder in reminders {
+        // 已移入回收站的条目不再参与调度；漏掉会让调度线程带着锁忙转。
+        if reminder.is_deleted() {
+            continue;
+        }
         if !reminder.enabled {
             continue;
         }
@@ -771,6 +784,7 @@ mod tests {
             early_notice_sent_ms: None,
             occurrence_count: 0,
             skip_occurrence_ms: None,
+            deleted_at_ms: None,
         }
     }
 
@@ -1087,6 +1101,56 @@ mod tests {
             next_wake(std::slice::from_ref(&reminder), fire - Duration::minutes(8)),
             Some(fire - Duration::minutes(8))
         );
+    }
+
+    /// 移入回收站后，调度相关的所有入口都要当它不存在：
+    /// 不弹、不提前、不推进跳过点，next_wake 也不能因残留的稍后时间忙转。
+    #[test]
+    fn deleted_reminders_are_invisible_to_scheduling() {
+        let now = fixed(2026, 10, 17, 12, 0, 0);
+        let past = now_ms(now - Duration::minutes(1));
+
+        let mut due = sample(Schedule::At { fire_at_ms: past }, true, Status::Pending);
+        due.deleted_at_ms = Some(past);
+        assert!(due_reminders(std::slice::from_ref(&due), now).is_empty());
+
+        let mut snoozed = sample(Schedule::At { fire_at_ms: past }, true, Status::Pending);
+        snoozed.snooze_until_ms = Some(past);
+        snoozed.deleted_at_ms = Some(past);
+        // 稍后时间已过：不门控的话 due 会弹、next_wake 会立刻唤醒导致忙转。
+        assert!(due_reminders(std::slice::from_ref(&snoozed), now).is_empty());
+        assert_eq!(next_wake(std::slice::from_ref(&snoozed), now), None);
+
+        let mut early = sample(
+            Schedule::Cron { expression: "0 * * * *".into(), end_date_ms: None, max_occurrences: None },
+            true,
+            Status::Recurring,
+        );
+        early.early_minutes = 5;
+        early.created_at_ms = now_ms(fixed(2026, 10, 17, 8, 0, 0));
+        early.last_occurrence_ms = Some(early.created_at_ms);
+        early.deleted_at_ms = Some(past);
+        assert!(early_reminders(std::slice::from_ref(&early), now).is_empty());
+
+        let mut skipped = sample(
+            Schedule::Cron { expression: "0 * * * *".into(), end_date_ms: None, max_occurrences: None },
+            true,
+            Status::Recurring,
+        );
+        skipped.created_at_ms = now_ms(fixed(2026, 10, 17, 8, 0, 0));
+        skipped.last_occurrence_ms = Some(skipped.created_at_ms);
+        skipped.skip_occurrence_ms = Some(past);
+        skipped.deleted_at_ms = Some(past);
+        assert!(skipped_reminders(std::slice::from_ref(&skipped), now).is_empty());
+
+        let mut waiting = sample(
+            Schedule::At { fire_at_ms: now_ms(now + Duration::minutes(5)) },
+            true,
+            Status::Pending,
+        );
+        waiting.deleted_at_ms = Some(past);
+        assert_eq!(next_wake(std::slice::from_ref(&waiting), now), None);
+        assert_eq!(next_occurrence_ms(&waiting), None);
     }
 
     #[test]

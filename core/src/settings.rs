@@ -74,6 +74,20 @@ fn default_close_to_tray() -> bool {
     true
 }
 
+/// 回收站保留天数：默认 30 天，范围 1-365。
+pub const DEFAULT_TRASH_KEEP_DAYS: u32 = 30;
+pub const TRASH_KEEP_DAYS_MIN: u32 = 1;
+pub const TRASH_KEEP_DAYS_MAX: u32 = 365;
+
+fn default_trash_keep_days() -> u32 {
+    DEFAULT_TRASH_KEEP_DAYS
+}
+
+/// 保留期输入夹在合法范围内，供设置面板校验用。
+pub fn clamp_trash_keep_days(value: u32) -> u32 {
+    value.clamp(TRASH_KEEP_DAYS_MIN, TRASH_KEEP_DAYS_MAX)
+}
+
 impl Default for DndMode {
     /// 默认只记录：勿扰时段最不打断人的做法。
     fn default() -> Self {
@@ -172,6 +186,9 @@ pub struct Settings {
     /// 点关闭按钮时的行为：true 隐藏到托盘后台继续提醒，false 直接退出。
     #[serde(default = "default_close_to_tray")]
     pub close_to_tray: bool,
+    /// 回收站保留天数，超过后自动彻底删除；1-365。
+    #[serde(default = "default_trash_keep_days")]
+    pub trash_keep_days: u32,
 }
 
 impl Default for Settings {
@@ -186,6 +203,7 @@ impl Default for Settings {
             dnd_end: default_dnd_end(),
             dnd_mode: DndMode::default(),
             close_to_tray: true,
+            trash_keep_days: DEFAULT_TRASH_KEEP_DAYS,
         }
     }
 }
@@ -243,6 +261,7 @@ mod tests {
         assert_eq!(loaded.dnd_end, "07:00");
         assert_eq!(loaded.dnd_mode, DndMode::Record);
         assert!(loaded.close_to_tray, "老设置里没有关闭行为开关，应默认隐藏到托盘");
+        assert_eq!(loaded.trash_keep_days, DEFAULT_TRASH_KEEP_DAYS, "老设置里没有回收站保留期，应默认 30 天");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -264,6 +283,7 @@ mod tests {
                 dnd_end: "06:45".into(),
                 dnd_mode: DndMode::Silent,
                 close_to_tray: false,
+                trash_keep_days: 7,
             },
         )
         .unwrap();
@@ -278,6 +298,10 @@ mod tests {
         assert_eq!(loaded.dnd_end, "06:45");
         assert_eq!(loaded.dnd_mode, DndMode::Silent);
         assert!(!loaded.close_to_tray);
+        assert_eq!(loaded.trash_keep_days, 7);
+        assert_eq!(clamp_trash_keep_days(0), 1, "低于下限要夹回 1");
+        assert_eq!(clamp_trash_keep_days(999), TRASH_KEEP_DAYS_MAX, "高于上限要夹回 365");
+        assert_eq!(clamp_trash_keep_days(30), 30);
         // 临时文件不应残留。
         assert!(!path.with_extension("json.tmp").exists());
         assert_eq!(ThemeMode::from_index(2), ThemeMode::Dark);

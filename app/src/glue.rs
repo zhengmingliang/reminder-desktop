@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -9,9 +10,9 @@ use chrono::{DateTime, Datelike, Local, Offset, Timelike};
 use reminder_core::update::{is_newer, Manifest};
 use reminder_core::validate::{arm_snooze, clear_skip, skip_next_occurrence};
 use reminder_core::{
-    check_sound_file, format_point, in_quiet_hours, inspect, millis_to_local, load_settings,
-    save_settings, settings_path, valid_hhmm, DndMode, Draft, Kind, Reminder, Report, Schedule,
-    Status, Store, ThemeMode,
+    check_sound_file, clamp_trash_keep_days, format_point, in_quiet_hours, inspect, millis_to_local,
+    load_settings, save_settings, settings_path, valid_hhmm, DndMode, Draft, Kind, Reminder, Report,
+    Schedule, Status, Store, ThemeMode, DEFAULT_TRASH_KEEP_DAYS,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
@@ -100,6 +101,18 @@ struct Session {
     update_busy: Cell<bool>,
     /// 本次运行里补发过的「错过」提醒，供概览上的「补看」按钮再弹一遍。
     missed_notices: RefCell<Vec<Notice>>,
+    /// 多选/回收站里勾选的条目 id；空集合表示当前没有勾选。
+    multi_selected: RefCell<HashSet<String>>,
+    /// Shift 范围选择的起点在 rows 里的下标；None 表示还没有锚点。
+    shift_anchor: Cell<Option<usize>>,
+    /// 回收站保留天数（settings.json 的 trash_keep_days）。
+    trash_keep_days: Cell<u32>,
+    /// 上次跑过回收站自动清理的日期（YYYY-MM-DD），跨天再跑一次。
+    last_cleanup_day: RefCell<String>,
+    /// 等确认的批量操作名单（移入回收站 / 彻底删除共用）。
+    pending_batch_ids: RefCell<Vec<String>>,
+    /// 等确认的彻底删除条目 id。
+    pending_purge: RefCell<Option<String>>,
 }
 
 pub fn run(smoke: bool) -> Result<(), String> {
@@ -212,6 +225,12 @@ pub fn run(smoke: bool) -> Result<(), String> {
         update_tx,
         update_busy: Cell::new(false),
         missed_notices: RefCell::new(Vec::new()),
+        multi_selected: RefCell::new(HashSet::new()),
+        shift_anchor: Cell::new(None),
+        trash_keep_days: Cell::new(settings.trash_keep_days),
+        last_cleanup_day: RefCell::new(String::new()),
+        pending_batch_ids: RefCell::new(Vec::new()),
+        pending_purge: RefCell::new(None),
     });
 
     if let Some(reason) = lock_store(&store).persist_block_reason().map(str::to_string) {
@@ -232,6 +251,10 @@ pub fn run(smoke: bool) -> Result<(), String> {
 
     // 关闭按钮行为开关：回显到设置面板。
     ui.set_close_to_tray_on(settings.close_to_tray);
+
+    // 回收站保留期：回显到设置面板，并按当天日期先跑一次过期清理。
+    ui.set_trash_days(i32::try_from(settings.trash_keep_days).unwrap_or(DEFAULT_TRASH_KEEP_DAYS as i32));
+    session.cleanup_trash();
 
     // 主文件坏过、这次是拿备份恢复回来的，要明确告诉用户，别让「数据变少了」变成玄学。
     if lock_store(&store).repaired_from_backup() {
@@ -288,6 +311,8 @@ pub fn run(smoke: bool) -> Result<(), String> {
         if ticks % 5 == 0 {
             timed.tick_clock();
             timed.refresh_list();
+            // 内部按日期判断，同一天只真正清理一次。
+            timed.cleanup_trash();
         }
         timed.poll_show_request();
         timed.poll_add_requests();
@@ -403,6 +428,76 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {
     ui.on_delete_request({
         let session = session.clone();
         move || session.ask_delete()
+    });
+    ui.on_duplicate_request({
+        let session = session.clone();
+        move || session.duplicate_loaded()
+    });
+    // 回收站视图开关。
+    ui.on_trash_open({
+        let session = session.clone();
+        move || session.set_trash_mode(true)
+    });
+    ui.on_trash_close({
+        let session = session.clone();
+        move || session.set_trash_mode(false)
+    });
+    // 多选：复选框、行点击（Ctrl/Shift）、批量操作。
+    ui.on_check_toggled({
+        let session = session.clone();
+        move |id| session.multi_toggle(id.as_str())
+    });
+    ui.on_multi_picked({
+        let session = session.clone();
+        move |id, ctrl, shift| session.multi_picked(id.as_str(), ctrl, shift)
+    });
+    ui.on_multi_select_all({
+        let session = session.clone();
+        move || session.multi_select_all()
+    });
+    ui.on_multi_cancel({
+        let session = session.clone();
+        move || {
+            session.exit_multi();
+            session.refresh_list();
+        }
+    });
+    ui.on_multi_enable({
+        let session = session.clone();
+        move || session.multi_set_enabled(true)
+    });
+    ui.on_multi_disable({
+        let session = session.clone();
+        move || session.multi_set_enabled(false)
+    });
+    ui.on_multi_delete({
+        let session = session.clone();
+        move || session.ask_multi_delete()
+    });
+    // 回收站内操作。
+    ui.on_trash_restore({
+        let session = session.clone();
+        move |id| session.trash_restore(id.as_str())
+    });
+    ui.on_trash_purge({
+        let session = session.clone();
+        move |id| session.ask_purge(id.as_str())
+    });
+    ui.on_trash_restore_selected({
+        let session = session.clone();
+        move || session.trash_restore_selected()
+    });
+    ui.on_trash_purge_selected({
+        let session = session.clone();
+        move || session.ask_purge_selected()
+    });
+    ui.on_trash_empty({
+        let session = session.clone();
+        move || session.ask_empty_trash()
+    });
+    ui.on_trash_days_changed({
+        let session = session.clone();
+        move |days| session.set_trash_days(days)
     });
     ui.on_skip_next({
         let session = session.clone();
@@ -893,7 +988,8 @@ impl Session {
         let previous = draft.id.as_ref().and_then(|id| {
             store.reminders.iter().find(|item| &item.id == id).cloned()
         });
-        let count = store.reminders.len();
+        // 新建上限只数正常列表；回收站里的条目不占额度。
+        let count = store.active_count();
         let reminder = match build_reminder_mapped(&draft, previous.as_ref(), now, count) {
             Ok(reminder) => reminder,
             Err(report) => {
@@ -927,11 +1023,17 @@ impl Session {
     }
 
     fn ask_delete(&self) {
-        let Some(id) = self.loaded.borrow().as_ref().map(|item| item.id.clone()) else {
+        let loaded = self.loaded.borrow();
+        let Some(item) = loaded.as_ref() else {
             return;
         };
-        let title = self.loaded.borrow().as_ref().map(|item| item.title.clone()).unwrap_or(id);
-        self.open_dialog("删除这条提醒？", &format!("「{title}」删除后不能恢复。"));
+        let title = item.title.clone();
+        drop(loaded);
+        let days = self.trash_keep_days.get();
+        self.open_dialog(
+            "删除这条提醒？",
+            &format!("「{title}」将移入回收站，{days} 天后自动清除，期间可随时恢复。"),
+        );
         if let Some(ui) = self.ui.upgrade() {
             ui.set_dialog("delete".into());
         }
@@ -959,12 +1061,34 @@ impl Session {
             if let Some(nav) = self.pending.borrow_mut().take() {
                 self.apply_nav(nav);
             }
+            return;
+        }
+        if kind == "multi-delete" {
+            let ids = self.pending_batch_ids.borrow_mut().drain(..).collect::<Vec<_>>();
+            self.soft_delete_many(&ids);
+            return;
+        }
+        if kind == "purge" {
+            if let Some(id) = self.pending_purge.borrow_mut().take() {
+                self.purge_by_id(&id);
+            }
+            return;
+        }
+        if kind == "purge-selected" {
+            let ids = self.pending_batch_ids.borrow_mut().drain(..).collect::<Vec<_>>();
+            self.purge_many(&ids);
+            return;
+        }
+        if kind == "empty-trash" {
+            self.empty_trash_now();
         }
     }
 
     fn close_dialog(&self) {
         *self.pending.borrow_mut() = None;
         *self.pending_restore.borrow_mut() = None;
+        self.pending_batch_ids.borrow_mut().clear();
+        *self.pending_purge.borrow_mut() = None;
         if let Some(ui) = self.ui.upgrade() {
             ui.set_dialog("".into());
         }
@@ -974,18 +1098,454 @@ impl Session {
         let Some(id) = self.loaded.borrow().as_ref().map(|item| item.id.clone()) else {
             return;
         };
+        self.soft_delete_many(std::slice::from_ref(&id));
+    }
+
+    /// 批量移入回收站：一次锁内逐条标记，最后统一落盘一次。
+    fn soft_delete_many(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
         let mut store = lock_store(&self.store);
-        if let Err(error) = store.delete(&id) {
+        if let Some(reason) = store.persist_block_reason().map(str::to_string) {
             drop(store);
+            self.toast(&reason);
+            return;
+        }
+        let now_ms = Local::now().timestamp_millis();
+        let mut deleted = 0usize;
+        for id in ids {
+            if let Some(item) = store.reminders.iter_mut().find(|item| item.id == *id) {
+                if item.deleted_at_ms.is_none() {
+                    item.deleted_at_ms = Some(now_ms);
+                    deleted += 1;
+                }
+            }
+        }
+        let result = if deleted > 0 { store.save() } else { Ok(()) };
+        drop(store);
+        if let Err(error) = result {
             self.toast(&error);
             return;
         }
-        drop(store);
         runtime::poke(&self.wake);
-        self.log.log("INFO", &format!("删除提醒 id={id}"));
-        self.show_blank();
+        self.log.log("INFO", &format!("移入回收站 {deleted} 条提醒"));
+        // 从编辑页删的：清空编辑区；多选删的：退出多选。
+        if self.loaded.borrow().as_ref().is_some_and(|item| ids.contains(&item.id)) {
+            self.show_blank();
+        }
+        self.exit_multi();
         self.refresh_list();
-        self.toast("已删除");
+        self.toast(&format!("已移入回收站（{deleted} 条）"));
+    }
+
+    /// 回收站保留期：夹到 1-365 后存进 settings.json。
+    fn set_trash_days(&self, days: f32) {
+        let days = clamp_trash_keep_days(days.round().clamp(1.0, 365.0) as u32);
+        self.trash_keep_days.set(days);
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_trash_days(i32::try_from(days).unwrap_or(30));
+        }
+        let path = settings_path(&self.data_dir);
+        let mut settings = load_settings(&path);
+        settings.trash_keep_days = days;
+        if let Err(error) = save_settings(&path, &settings) {
+            self.log.log("ERROR", &format!("回收站设置保存失败：{error}"));
+            self.toast("回收站设置未能保存");
+        } else {
+            self.toast(&format!("回收站保留 {days} 天"));
+            self.refresh_list();
+        }
+    }
+
+    /// 回收站过期清理：每天最多真正跑一次（按本地日期变化判断）。
+    fn cleanup_trash(&self) {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        if *self.last_cleanup_day.borrow() == today {
+            return;
+        }
+        *self.last_cleanup_day.borrow_mut() = today;
+        let keep = self.trash_keep_days.get();
+        let now_ms = Local::now().timestamp_millis();
+        let purged = {
+            let mut store = lock_store(&self.store);
+            store.purge_expired(now_ms, keep)
+        };
+        match purged {
+            Ok(count) if count > 0 => {
+                self.log
+                    .log("INFO", &format!("回收站自动清理了 {count} 条过期提醒"));
+                self.refresh_list();
+                self.toast(&format!("回收站清理了 {count} 条过期提醒"));
+            }
+            Ok(_) => {}
+            Err(error) => self.log.log("ERROR", &format!("回收站自动清理失败：{error}")),
+        }
+    }
+
+    /// 进入 / 退出回收站视图。切换时清掉勾选，避免跨视图残留。
+    fn set_trash_mode(&self, on: bool) {
+        let Some(ui) = self.ui.upgrade() else {
+            return;
+        };
+        ui.set_trash_mode(on);
+        self.exit_multi();
+        self.refresh_list();
+    }
+
+    /// 清空勾选集合（不改变多选模式开关）。
+    fn clear_multi(&self) {
+        self.multi_selected.borrow_mut().clear();
+        self.shift_anchor.set(None);
+    }
+
+    /// 完全退出多选：清勾选 + 关闭多选模式。
+    fn exit_multi(&self) {
+        self.clear_multi();
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_select_mode(false);
+            ui.set_selected_count(0);
+        }
+    }
+
+    fn multi_count(&self) -> usize {
+        self.multi_selected.borrow().len()
+    }
+
+    /// 复选框勾选/取消：直接翻转集合成员。
+    fn multi_toggle(&self, id: &str) {
+        {
+            let mut selected = self.multi_selected.borrow_mut();
+            if !selected.remove(id) {
+                selected.insert(id.to_string());
+            }
+        }
+        let ids: Vec<String> = self.rows.iter().map(|row| row.id.to_string()).collect();
+        self.shift_anchor.set(ids.iter().position(|item| item == id));
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_selected_count(self.multi_count() as i32);
+        }
+        self.refresh_list();
+    }
+
+    /// 行点击的多选语义：Ctrl 单独翻转并记锚点；Shift 从锚点连选到当前行。
+    fn multi_picked(&self, id: &str, ctrl: bool, shift: bool) {
+        let ids: Vec<String> = self.rows.iter().map(|row| row.id.to_string()).collect();
+        if shift {
+            let current = ids.iter().position(|item| item == id);
+            match (current, self.shift_anchor.get()) {
+                (Some(current), Some(anchor)) => {
+                    let (lo, hi) = if anchor <= current { (anchor, current) } else { (current, anchor) };
+                    let mut selected = self.multi_selected.borrow_mut();
+                    for item in &ids[lo..=hi] {
+                        selected.insert(item.clone());
+                    }
+                }
+                _ => {
+                    // 没有锚点时 Shift 退化为单选翻转。
+                    let mut selected = self.multi_selected.borrow_mut();
+                    if !selected.remove(id) {
+                        selected.insert(id.to_string());
+                    }
+                    self.shift_anchor.set(current);
+                }
+            }
+        } else {
+            let mut selected = self.multi_selected.borrow_mut();
+            if !selected.remove(id) {
+                selected.insert(id.to_string());
+            }
+            self.shift_anchor.set(ids.iter().position(|item| item == id));
+        }
+        let _ = ctrl;
+        let count = self.multi_count();
+        if let Some(ui) = self.ui.upgrade() {
+            // 普通列表里点选到第一条就自动进入多选模式；回收站本来就显示复选框。
+            if !ui.get_trash_mode() && count > 0 {
+                ui.set_select_mode(true);
+            }
+            ui.set_selected_count(count as i32);
+        }
+        self.refresh_list();
+    }
+
+    /// 全选当前可见行。
+    fn multi_select_all(&self) {
+        {
+            let mut selected = self.multi_selected.borrow_mut();
+            for row in self.rows.iter() {
+                selected.insert(row.id.to_string());
+            }
+        }
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_selected_count(self.multi_count() as i32);
+        }
+        self.refresh_list();
+    }
+
+    /// 批量移入回收站前确认。
+    fn ask_multi_delete(&self) {
+        let ids: Vec<String> = self.multi_selected.borrow().iter().cloned().collect();
+        if ids.is_empty() {
+            return;
+        }
+        *self.pending_batch_ids.borrow_mut() = ids;
+        let count = self.multi_count();
+        self.open_dialog(
+            "删除选中的提醒？",
+            &format!(
+                "选中的 {count} 条提醒将移入回收站，{} 天后自动清除，期间可随时恢复。",
+                self.trash_keep_days.get()
+            ),
+        );
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_dialog("multi-delete".into());
+        }
+    }
+
+    /// 批量启用/停用：走编辑器同一条 build_reminder 校验链，
+    /// 启用 Cron 时自动把周期起点挪到现在，不补报停用期间错过的周期。
+    fn multi_set_enabled(&self, enabled: bool) {
+        let ids: Vec<String> = self.multi_selected.borrow().iter().cloned().collect();
+        if ids.is_empty() {
+            return;
+        }
+        let now = Local::now();
+        let mut store = lock_store(&self.store);
+        if let Some(reason) = store.persist_block_reason().map(str::to_string) {
+            drop(store);
+            self.toast(&reason);
+            return;
+        }
+        let targets: Vec<Reminder> = store
+            .reminders
+            .iter()
+            .filter(|item| !item.is_deleted() && ids.contains(&item.id) && item.enabled != enabled)
+            .cloned()
+            .collect();
+        let mut updated: Vec<Reminder> = Vec::new();
+        let mut failed = 0usize;
+        for previous in &targets {
+            let mut draft = previous.to_draft();
+            draft.enabled = enabled;
+            match build_reminder_mapped(&draft, Some(previous), now, 0) {
+                Ok(item) => updated.push(item),
+                Err(_) => failed += 1,
+            }
+        }
+        let mut changed = 0usize;
+        for item in updated {
+            if let Some(index) = store
+                .reminders
+                .iter()
+                .position(|existing| existing.id == item.id)
+            {
+                store.reminders[index] = item;
+                changed += 1;
+            }
+        }
+        let result = if changed > 0 { store.save() } else { Ok(()) };
+        drop(store);
+        if let Err(error) = result {
+            self.toast(&error);
+            return;
+        }
+        runtime::poke(&self.wake);
+        self.refresh_list();
+        let action = if enabled { "启用" } else { "停用" };
+        let message = if failed > 0 {
+            format!("已{action} {changed} 条，{failed} 条无法{action}")
+        } else if changed > 0 {
+            format!("已{action} {changed} 条提醒")
+        } else {
+            format!("选中的提醒都已处于{action}状态")
+        };
+        self.toast(&message);
+    }
+
+    /// 恢复一条回收站提醒（Cron 从现在起算，不补报）。
+    fn trash_restore(&self, id: &str) {
+        let mut store = lock_store(&self.store);
+        if let Some(reason) = store.persist_block_reason().map(str::to_string) {
+            drop(store);
+            self.toast(&reason);
+            return;
+        }
+        let result = store.restore_deleted(id, Local::now().timestamp_millis());
+        drop(store);
+        match result {
+            Ok(()) => {
+                runtime::poke(&self.wake);
+                self.refresh_list();
+                self.toast("已恢复");
+            }
+            Err(error) => self.toast(&error),
+        }
+    }
+
+    /// 恢复勾选的全部条目。
+    fn trash_restore_selected(&self) {
+        let ids: Vec<String> = self.multi_selected.borrow().iter().cloned().collect();
+        if ids.is_empty() {
+            return;
+        }
+        let mut store = lock_store(&self.store);
+        if let Some(reason) = store.persist_block_reason().map(str::to_string) {
+            drop(store);
+            self.toast(&reason);
+            return;
+        }
+        let now_ms = Local::now().timestamp_millis();
+        let mut restored = 0usize;
+        for id in &ids {
+            if store.restore_deleted(id, now_ms).is_ok() {
+                restored += 1;
+            }
+        }
+        drop(store);
+        if restored > 0 {
+            runtime::poke(&self.wake);
+        }
+        self.exit_multi();
+        self.refresh_list();
+        self.toast(&format!("已恢复 {restored} 条提醒"));
+    }
+
+    /// 彻底删除一条（先确认）。
+    fn ask_purge(&self, id: &str) {
+        let title = lock_store(&self.store)
+            .reminders
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.title.clone())
+            .unwrap_or_default();
+        *self.pending_purge.borrow_mut() = Some(id.to_string());
+        self.open_dialog("彻底删除？", &format!("「{title}」将从回收站永久删除，不能恢复。"));
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_dialog("purge".into());
+        }
+    }
+
+    fn purge_by_id(&self, id: &str) {
+        let mut store = lock_store(&self.store);
+        if let Some(reason) = store.persist_block_reason().map(str::to_string) {
+            drop(store);
+            self.toast(&reason);
+            return;
+        }
+        let result = store.purge(id);
+        drop(store);
+        match result {
+            Ok(()) => {
+                self.refresh_list();
+                self.toast("已彻底删除");
+            }
+            Err(error) => self.toast(&error),
+        }
+    }
+
+    /// 彻底删除勾选条目（先确认）。
+    fn ask_purge_selected(&self) {
+        let ids: Vec<String> = self.multi_selected.borrow().iter().cloned().collect();
+        if ids.is_empty() {
+            return;
+        }
+        *self.pending_batch_ids.borrow_mut() = ids;
+        let count = self.multi_count();
+        self.open_dialog(
+            "彻底删除选中的提醒？",
+            &format!("选中的 {count} 条提醒将从回收站永久删除，不能恢复。"),
+        );
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_dialog("purge-selected".into());
+        }
+    }
+
+    fn purge_many(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut store = lock_store(&self.store);
+        if let Some(reason) = store.persist_block_reason().map(str::to_string) {
+            drop(store);
+            self.toast(&reason);
+            return;
+        }
+        let before = store.reminders.len();
+        store
+            .reminders
+            .retain(|item| !ids.iter().any(|id| *id == item.id));
+        let purged = before - store.reminders.len();
+        let result = if purged > 0 { store.save() } else { Ok(()) };
+        drop(store);
+        if let Err(error) = result {
+            self.toast(&error);
+            return;
+        }
+        self.exit_multi();
+        self.refresh_list();
+        self.toast(&format!("已彻底删除 {purged} 条提醒"));
+    }
+
+    /// 清空回收站（先确认）。
+    fn ask_empty_trash(&self) {
+        let count = lock_store(&self.store).trash_count();
+        if count == 0 {
+            self.toast("回收站已经是空的");
+            return;
+        }
+        self.open_dialog(
+            "清空回收站？",
+            &format!("回收站里的 {count} 条提醒将永久删除，不能恢复。"),
+        );
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_dialog("empty-trash".into());
+        }
+    }
+
+    fn empty_trash_now(&self) {
+        let mut store = lock_store(&self.store);
+        if let Some(reason) = store.persist_block_reason().map(str::to_string) {
+            drop(store);
+            self.toast(&reason);
+            return;
+        }
+        let result = store.empty_trash();
+        drop(store);
+        match result {
+            Ok(count) => {
+                self.exit_multi();
+                self.refresh_list();
+                self.toast(&format!("已清空回收站（{count} 条）"));
+            }
+            Err(error) => self.toast(&error),
+        }
+    }
+
+    /// 创建副本：把当前编辑的提醒复制成一份未保存的新草稿。
+    fn duplicate_loaded(&self) {
+        let Some(reminder) = self.loaded.borrow().clone() else {
+            return;
+        };
+        let mut draft = reminder.to_draft();
+        draft.id = None;
+        let title = draft.title.trim().to_string();
+        draft.title = if title.is_empty() {
+            "未命名提醒（副本）".into()
+        } else {
+            format!("{title}（副本）")
+        };
+        let sound = reminder.sound_path.clone().unwrap_or_default();
+        self.show_blank();
+        *self.sound_path.borrow_mut() = sound;
+        self.write_draft(&draft);
+        *self.baseline.borrow_mut() = draft;
+        self.reveal_errors.set(false);
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_main_view("edit".into());
+        }
+        self.refresh_list();
+        self.toast("已创建副本，保存后生效");
     }
 
     fn open_dialog(&self, title: &str, message: &str) {
@@ -1580,23 +2140,31 @@ impl Session {
             return;
         };
         let now = Local::now();
+        let now_ms = now.timestamp_millis();
         let search = self.search.borrow().to_lowercase();
         let filter = ui.get_list_filter().to_string();
+        let trash_mode = ui.get_trash_mode();
         let store = lock_store(&self.store);
-        let pending = store.reminders.iter().filter(|item| bucket(item) == "pending").count();
-        let paused = store.reminders.iter().filter(|item| bucket(item) == "paused").count();
-        let total = store.reminders.len();
-        let today = now.date_naive();
-        let today_fired = store
+        // 回收站里的条目不参与任何计数、概览与调度展示。
+        let active: Vec<Reminder> = store
             .reminders
+            .iter()
+            .filter(|item| !item.is_deleted())
+            .cloned()
+            .collect();
+        let pending = active.iter().filter(|item| bucket(item) == "pending").count();
+        let paused = active.iter().filter(|item| bucket(item) == "paused").count();
+        let total = active.len();
+        let trash_total = store.reminders.len() - total;
+        let today = now.date_naive();
+        let today_fired = active
             .iter()
             .filter(|item| {
                 item.last_fired_at_ms
                     .is_some_and(|ms| millis_to_local(ms).date_naive() == today)
             })
             .count();
-        let due_today = store
-            .reminders
+        let due_today = active
             .iter()
             .filter(|item| bucket(item) == "pending")
             .filter(|item| {
@@ -1604,52 +2172,111 @@ impl Session {
                     .is_some_and(|time| time.date_naive() == today)
             })
             .count();
+        ui.set_trash_count(trash_total.to_string().into());
         ui.set_tab_all(total.to_string().into());
         ui.set_tab_pending(pending.to_string().into());
         ui.set_tab_today(due_today.to_string().into());
         ui.set_tab_fired(today_fired.to_string().into());
         ui.set_tab_paused(paused.to_string().into());
         ui.set_footer_text(format!("共 {total} 条提醒 · 待触发 {pending} 条").into());
-        let mut items: Vec<&Reminder> = store
-            .reminders
-            .iter()
-            .filter(|item| filter == "all" || bucket(item) == filter)
-            .filter(|item| search.is_empty() || contains_query(item, &search))
-            .collect();
-        items.sort_by(|left, right| {
-            rank(left)
-                .cmp(&rank(right))
-                .then(next_millis(left, now).cmp(&next_millis(right, now)))
-                .then(left.title.cmp(&right.title))
-        });
-        let selected = self.selected.borrow().clone();
-        let rows: Vec<ReminderRow> = items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let text = reminder_core::list_texts(item, now);
-                ReminderRow {
-                    id: item.id.clone().into(),
-                    title: item.title.clone().into(),
-                    summary: text.summary.into(),
-                    when_text: text.when_text.into(),
-                    fired_at_text: text.fired_at_text.into(),
-                    scheduled_text: text.scheduled_text.into(),
-                    distance_text: text.distance_text.into(),
-                    badge: text.badge.into(),
-                    badge_kind: text.badge_kind.into(),
-                    selected: selected.as_deref() == Some(item.id.as_str()),
-                    sound_on: item.sound_enabled,
-                    is_last_in_group: items
-                        .get(index + 1)
-                        .map(|next| bucket(next) != bucket(item))
-                        .unwrap_or(true),
-                }
-            })
-            .collect();
+        let multi = self.multi_selected.borrow().clone();
+        ui.set_selected_count(multi.len() as i32);
+        let rows: Vec<ReminderRow> = if trash_mode {
+            // 回收站：按删除时间倒序，右侧显示保留期剩余天数。
+            let keep_days = i64::from(self.trash_keep_days.get());
+            let mut items: Vec<&Reminder> = store
+                .reminders
+                .iter()
+                .filter(|item| item.is_deleted())
+                .filter(|item| search.is_empty() || contains_query(item, &search))
+                .collect();
+            items.sort_by(|left, right| {
+                right
+                    .deleted_at_ms
+                    .unwrap_or(0)
+                    .cmp(&left.deleted_at_ms.unwrap_or(0))
+                    .then(left.title.cmp(&right.title))
+            });
+            items
+                .iter()
+                .map(|item| {
+                    let deleted_at = item.deleted_at_ms.unwrap_or(now_ms);
+                    let remain_days =
+                        keep_days - (now_ms - deleted_at).max(0) / 86_400_000;
+                    let deleted_at_text = if remain_days <= 0 {
+                        "今天内自动清除".to_string()
+                    } else {
+                        format!("{} 天后自动清除", remain_days)
+                    };
+                    let text = reminder_core::list_texts(item, now);
+                    let summary = if text.summary.is_empty() {
+                        deleted_at_text.clone()
+                    } else {
+                        format!("{} · {}", text.summary, deleted_at_text)
+                    };
+                    ReminderRow {
+                        id: item.id.clone().into(),
+                        title: item.title.clone().into(),
+                        summary: summary.into(),
+                        when_text: String::new().into(),
+                        fired_at_text: String::new().into(),
+                        scheduled_text: String::new().into(),
+                        distance_text: String::new().into(),
+                        badge: "已删除".into(),
+                        badge_kind: "trash".into(),
+                        selected: false,
+                        checked: multi.contains(&item.id),
+                        sound_on: false,
+                        is_last_in_group: true,
+                        deleted_at_text: deleted_at_text.into(),
+                    }
+                })
+                .collect()
+        } else {
+            let mut items: Vec<&Reminder> = active
+                .iter()
+                .filter(|item| filter == "all" || bucket(item) == filter)
+                .filter(|item| search.is_empty() || contains_query(item, &search))
+                .collect();
+            items.sort_by(|left, right| {
+                rank(left)
+                    .cmp(&rank(right))
+                    .then(next_millis(left, now).cmp(&next_millis(right, now)))
+                    .then(left.title.cmp(&right.title))
+            });
+            let selected = self.selected.borrow().clone();
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let text = reminder_core::list_texts(item, now);
+                    ReminderRow {
+                        id: item.id.clone().into(),
+                        title: item.title.clone().into(),
+                        summary: text.summary.into(),
+                        when_text: text.when_text.into(),
+                        fired_at_text: text.fired_at_text.into(),
+                        scheduled_text: text.scheduled_text.into(),
+                        distance_text: text.distance_text.into(),
+                        badge: text.badge.into(),
+                        badge_kind: text.badge_kind.into(),
+                        selected: selected.as_deref() == Some(item.id.as_str()),
+                        checked: multi.contains(&item.id),
+                        sound_on: item.sound_enabled,
+                        is_last_in_group: items
+                            .get(index + 1)
+                            .map(|next| bucket(next) != bucket(item))
+                            .unwrap_or(true),
+                        deleted_at_text: String::new().into(),
+                    }
+                })
+                .collect()
+        };
         let visible = rows.len();
-        // 概览的「今天时间线」「最近记录」也用真实数据。
-        let timeline = reminder_core::today_timeline(&store.reminders, now);
+        // 顶栏「下一次」胶囊不能在回收站里指向已删除条目。
+        ui.set_has_next(!trash_mode && visible > 0);
+        // 概览的「今天时间线」「最近记录」也用真实数据（不含回收站）。
+        let timeline = reminder_core::today_timeline(&active, now);
         let timeline_rows: Vec<TimelineRow> = timeline
             .iter()
             .map(|entry| TimelineRow {
@@ -1660,7 +2287,7 @@ impl Session {
                 is_next: entry.is_next,
             })
             .collect();
-        let record_list: Vec<RecordRow> = reminder_core::recent_records(&store.reminders, now)
+        let record_list: Vec<RecordRow> = reminder_core::recent_records(&active, now)
             .iter()
             .map(|entry| RecordRow {
                 time_text: entry.time_text.clone().into(),
@@ -1676,7 +2303,13 @@ impl Session {
         ui.set_missed_count(missed.to_string().into());
         ui.set_records(ModelRc::new(VecModel::from(record_list)));
         ui.set_list_empty(visible == 0);
-        ui.set_empty_text(if total == 0 {
+        ui.set_empty_text(if trash_mode {
+            if trash_total == 0 {
+                "回收站是空的。删除的提醒会先放在这里，可随时恢复。"
+            } else {
+                "没有匹配的提醒"
+            }
+        } else if total == 0 {
             "还没有提醒。点击「新建提醒」创建第一条。"
         } else {
             "没有匹配的提醒"
@@ -2045,6 +2678,7 @@ impl Session {
         store
             .reminders
             .iter()
+            .filter(|item| !item.is_deleted())
             .any(|item| item.snooze_until_ms.map(|ms| ms > now).unwrap_or(false))
     }
 
@@ -2054,6 +2688,7 @@ impl Session {
         let next_snooze = store
             .reminders
             .iter()
+            .filter(|item| !item.is_deleted())
             .filter_map(|item| item.snooze_until_ms)
             .filter(|ms| *ms > now)
             .min();
@@ -2070,6 +2705,7 @@ impl Session {
         let pending = store
             .reminders
             .iter()
+            .filter(|item| !item.is_deleted())
             .filter(|item| bucket(item) == "pending")
             .count();
         let status = if pending == 0 {
@@ -2079,7 +2715,9 @@ impl Session {
         };
         let next: Option<(String, DateTime<Local>)> = store
             .reminders
-            .iter()            .filter(|item| bucket(item) == "pending")
+            .iter()
+            .filter(|item| !item.is_deleted())
+            .filter(|item| bucket(item) == "pending")
             .filter_map(|item| {
                 reminder_core::next_wake(std::slice::from_ref(item), now)
                     .map(|time| (item.title.clone(), time))
@@ -2173,7 +2811,8 @@ impl Session {
             self.toast(&reason);
             return;
         }
-        let count = store.reminders.len();
+        // 快速创建同样只数正常列表。
+        let count = store.active_count();
         let reminder = match build_reminder_mapped(&draft, None, now, count) {
             Ok(reminder) => reminder,
             Err(report) => {
@@ -2409,7 +3048,7 @@ impl Session {
         {
             let mut store = lock_store(&self.store);
             for reminder in reminders {
-                if store.reminders.len() >= reminder_core::model::REMINDER_CAP {
+                if store.active_count() >= reminder_core::model::REMINDER_CAP {
                     self.log.log("WARN", "命令行添加被拒：提醒数量已达上限");
                     self.toast("提醒数量已达上限，命令行添加失败");
                     break;
