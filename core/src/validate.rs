@@ -436,8 +436,8 @@ pub fn parse_cron(text: &str) -> Result<Cron, String> {
     if normalized.is_empty() {
         return Err("请输入 Cron 表达式".into());
     }
-    if normalized.chars().any(|ch| matches!(ch, '?' | '#' | 'L' | 'W')) {
-        return Err("不支持 ?、L、W、# 这些扩展符号，请使用标准 5 段 Cron".into());
+    if normalized.chars().any(|ch| matches!(ch, '?' | '#' | 'W')) {
+        return Err("不支持 ?、W、# 这些扩展符号；日字段可用 L 表示每月最后一天".into());
     }
     let fields: Vec<&str> = normalized.split(' ').collect();
     if fields.len() != 5 {
@@ -450,6 +450,13 @@ pub fn parse_cron(text: &str) -> Result<Cron, String> {
             "Cron 需要 5 段（分 时 日 月 周），当前是 {} 段。{extra}示例：0 9 * * 1-5",
             fields.len()
         ));
+    }
+    // L 只允许出现在日字段（每月最后一天）。
+    for (index, field) in fields.iter().enumerate() {
+        if field.contains(['L', 'l']) && index != 2 {
+            let labels = ["分钟", "小时", "日", "月", "周"];
+            return Err(format!("L 只能用在日字段（每月最后一天），{}字段不支持", labels[index]));
+        }
     }
     let labels = ["分钟", "小时", "日", "月", "周"];
     let ranges = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 7)];
@@ -534,6 +541,10 @@ fn check_part(
     range: (u32, u32),
     names: &[(&str, u32)],
 ) -> Result<(), String> {
+    // 日字段允许单独的 L（每月最后一天），交给 croner 解析。
+    if label == "日" && part.eq_ignore_ascii_case("L") {
+        return Ok(());
+    }
     let (base, step) = match part.split_once('/') {
         Some((base, step)) => {
             if step.is_empty() || !step.bytes().all(|byte| byte.is_ascii_digit()) || step == "0" {
@@ -643,6 +654,22 @@ mod tests {
         assert!(parse_at("2026-02-31", "09:00", now).unwrap_err().contains("日期"));
         assert!(parse_at("2026-10-18", "24:00", now).unwrap_err().contains("时间"));
         assert!(parse_at("2026-10-18", "9:7", now).is_ok());
+    }
+
+    #[test]
+    fn cron_allows_l_in_day_field_for_last_day() {
+        assert!(parse_cron("0 9 L * *").is_ok());
+        // 其它字段放 L 不合法。
+        assert!(parse_cron("L 9 * * *").unwrap_err().contains("L 只能"));
+        assert!(parse_cron("0 9 * * L").unwrap_err().contains("L 只能"));
+        // 日字段允许 L 时 preview 仍能算。
+        let times = next_cron_times("0 9 L * *", now(), 3).unwrap();
+        assert_eq!(times.len(), 3);
+        for time in &times {
+            // 当天是当月最后一天。
+            let next_day = *time + chrono::Duration::days(1);
+            assert_ne!(time.month(), next_day.month());
+        }
     }
 
     #[test]

@@ -1926,6 +1926,11 @@ export component MainWindow inherits Window {
                                                         clicked => { root.preset("0 9 1 * *"); }
                                                     }
                                                     Chip {
+                                                        label: "每月最后一天";
+                                                        active: root.form-cron == "0 9 L * *";
+                                                        clicked => { root.preset("0 9 L * *"); }
+                                                    }
+                                                    Chip {
                                                         label: "自定义 Cron";
                                                         dashed: true;
                                                         active: root.custom-cron;
