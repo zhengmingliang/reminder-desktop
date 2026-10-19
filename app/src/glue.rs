@@ -9,8 +9,9 @@ use chrono::{DateTime, Datelike, Local, Offset, Timelike};
 use reminder_core::update::{is_newer, Manifest};
 use reminder_core::validate::{arm_snooze, clear_skip, skip_next_occurrence};
 use reminder_core::{
-    check_sound_file, format_point, inspect, millis_to_local, load_settings, save_settings,
-    settings_path, Draft, Kind, Reminder, Report, Schedule, Status, Store, ThemeMode,
+    check_sound_file, format_point, in_quiet_hours, inspect, millis_to_local, load_settings,
+    save_settings, settings_path, valid_hhmm, DndMode, Draft, Kind, Reminder, Report, Schedule,
+    Status, Store, ThemeMode,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
@@ -79,6 +80,11 @@ struct Session {
     theme_mode: Cell<ThemeMode>,
     /// 弹窗一直没被处理时，每隔多少分钟再响一次；0 表示不再响。持久化在 settings.json。
     repeat_minutes: Cell<u32>,
+    /// 勿扰时段配置，持久化在 settings.json；运行期缓存，show_notices 每次读。
+    dnd_enabled: Cell<bool>,
+    dnd_start: RefCell<String>,
+    dnd_end: RefCell<String>,
+    dnd_mode: Cell<DndMode>,
     /// 已确认的新版本清单，等用户点「下载更新」。
     pending_update: RefCell<Option<Manifest>>,
     /// 全局快捷键抓键线程；None 表示关闭或启用失败。
@@ -192,6 +198,10 @@ pub fn run(smoke: bool) -> Result<(), String> {
         pending_restore: RefCell::new(None),
         theme_mode: Cell::new(settings.theme),
         repeat_minutes: Cell::new(settings.repeat_minutes),
+        dnd_enabled: Cell::new(settings.dnd_enabled),
+        dnd_start: RefCell::new(settings.dnd_start.clone()),
+        dnd_end: RefCell::new(settings.dnd_end.clone()),
+        dnd_mode: Cell::new(settings.dnd_mode),
         pending_update: RefCell::new(None),
         hotkey: RefCell::new(None),
         hotkey_tx,
@@ -209,6 +219,13 @@ pub fn run(smoke: bool) -> Result<(), String> {
     // 全局快捷键：仅 X11。抓不到（Wayland / 被占用）就降级，不影响其它功能。
     ui.set_hotkey_on(settings.hotkey_enabled);
     session.sync_hotkey(settings.hotkey_enabled);
+
+    // 勿扰时段：开关、起止时间与模式回显到设置面板。
+    ui.set_dnd_on(settings.dnd_enabled);
+    ui.set_dnd_start(settings.dnd_start.clone().into());
+    ui.set_dnd_end(settings.dnd_end.clone().into());
+    ui.set_dnd_mode(settings.dnd_mode.as_index());
+    session.sync_dnd_status("");
 
     // 主文件坏过、这次是拿备份恢复回来的，要明确告诉用户，别让「数据变少了」变成玄学。
     if lock_store(&store).repaired_from_backup() {
@@ -411,6 +428,22 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_re
     ui.on_hotkey_changed({
         let session = session.clone();
         move |on| session.set_hotkey(on)
+    });
+    ui.on_dnd_changed({
+        let session = session.clone();
+        move |on| session.set_dnd(on)
+    });
+    ui.on_dnd_start_edited({
+        let session = session.clone();
+        move |text| session.set_dnd_time(true, text.to_string())
+    });
+    ui.on_dnd_end_edited({
+        let session = session.clone();
+        move |text| session.set_dnd_time(false, text.to_string())
+    });
+    ui.on_dnd_mode_changed({
+        let session = session.clone();
+        move |index| session.set_dnd_mode(index)
     });
     ui.on_check_update({
         let session = session.clone();
@@ -1057,6 +1090,96 @@ impl Session {
         self.log.log("INFO", &format!("全局快捷键开关={on}"));
     }
 
+    /// 勿扰开关：时段内到期的提醒按所选模式（静音弹窗 / 只记录）处理。
+    fn set_dnd(&self, on: bool) {
+        let path = settings_path(&self.data_dir);
+        let mut settings = load_settings(&path);
+        settings.dnd_enabled = on;
+        if let Err(error) = save_settings(&path, &settings) {
+            self.log.log("ERROR", &format!("勿扰设置保存失败：{error}"));
+            self.toast("勿扰设置未能保存");
+            return;
+        }
+        self.dnd_enabled.set(on);
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_dnd_on(on);
+        }
+        self.log.log("INFO", &format!("勿扰时段开关={on}"));
+        self.sync_dnd_status("");
+    }
+
+    /// 勿扰起止时间：只接受 HH:MM；非法输入不落盘也不进运行期缓存，状态栏给出提示。
+    fn set_dnd_time(&self, is_start: bool, text: String) {
+        let text = text.trim().to_string();
+        if !valid_hhmm(&text) {
+            self.sync_dnd_status("时间格式应为 HH:MM，例如 22:00");
+            return;
+        }
+        let path = settings_path(&self.data_dir);
+        let mut settings = load_settings(&path);
+        if is_start {
+            settings.dnd_start = text.clone();
+        } else {
+            settings.dnd_end = text.clone();
+        }
+        if let Err(error) = save_settings(&path, &settings) {
+            self.log.log("ERROR", &format!("勿扰设置保存失败：{error}"));
+            self.toast("勿扰设置未能保存");
+            return;
+        }
+        if is_start {
+            *self.dnd_start.borrow_mut() = text;
+        } else {
+            *self.dnd_end.borrow_mut() = text;
+        }
+        self.sync_dnd_status("");
+    }
+
+    /// 勿扰模式：0 = 静音弹窗，1 = 只记录。
+    fn set_dnd_mode(&self, index: i32) {
+        let mode = DndMode::from_index(index);
+        let path = settings_path(&self.data_dir);
+        let mut settings = load_settings(&path);
+        settings.dnd_mode = mode;
+        if let Err(error) = save_settings(&path, &settings) {
+            self.log.log("ERROR", &format!("勿扰设置保存失败：{error}"));
+            self.toast("勿扰设置未能保存");
+            return;
+        }
+        self.dnd_mode.set(mode);
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_dnd_mode(mode.as_index());
+        }
+        self.log.log("INFO", &format!("勿扰模式={mode:?}"));
+        self.sync_dnd_status("");
+    }
+
+    /// 设置页勿扰区块的说明文字：非法输入时显示错误，否则显示当前生效配置。
+    fn sync_dnd_status(&self, error: &str) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        if !error.is_empty() {
+            ui.set_dnd_status(error.into());
+            return;
+        }
+        if !self.dnd_enabled.get() {
+            ui.set_dnd_status("".into());
+            return;
+        }
+        let mode = match self.dnd_mode.get() {
+            DndMode::Silent => "静音弹窗",
+            DndMode::Record => "只记录",
+        };
+        ui.set_dnd_status(
+            format!(
+                "当前生效：{} 至 {} · {}；结束早于开始表示跨午夜",
+                self.dnd_start.borrow(),
+                self.dnd_end.borrow(),
+                mode
+            )
+            .into(),
+        );
+    }
+
     /// 更新清单地址：环境变量 REMINDER_UPDATE_URL 优先，其次 settings.json 的 update_url。
     fn update_url(&self) -> Option<String> {
         if let Ok(url) = std::env::var("REMINDER_UPDATE_URL") {
@@ -1554,6 +1677,31 @@ impl Session {
         if notices.is_empty() {
             return;
         }
+        // 勿扰时段：只记录模式直接进补看列表，不弹不响；静音弹窗模式照弹但去掉铃声与系统通知。
+        let quiet = in_quiet_hours(
+            Local::now(),
+            self.dnd_enabled.get(),
+            &self.dnd_start.borrow(),
+            &self.dnd_end.borrow(),
+        );
+        if quiet && self.dnd_mode.get() == DndMode::Record {
+            for notice in &mut notices {
+                notice.note = "勿扰时段，只记录未弹出；点「补看」可重新弹出".into();
+                notice.late = true;
+                self.log.log(
+                    "INFO",
+                    &format!("勿扰时段只记录 id={} title={}", notice.id, notice.title),
+                );
+            }
+            self.record_missed(notices);
+            self.refresh_list();
+            return;
+        }
+        if quiet {
+            for notice in &mut notices {
+                notice.sound_enabled = false;
+            }
+        }
         // 先记下补发过的「错过」提醒，概览上给一个「补看」入口。
         let missed: Vec<Notice> = notices
             .iter()
@@ -1587,11 +1735,15 @@ impl Session {
         };
         let fired_ids: Vec<String> = notices.iter().map(|item| item.id.clone()).collect();
         for notice in notices {
-            self.send_fallback_notification(&notice);
+            if !quiet {
+                self.send_fallback_notification(&notice);
+            }
             self.open_popup(notice);
         }
         if let Some(summary) = overflow {
-            self.send_fallback_notification(&summary);
+            if !quiet {
+                self.send_fallback_notification(&summary);
+            }
             self.open_popup(summary);
         }
         self.refresh_list();

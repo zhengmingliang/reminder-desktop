@@ -52,6 +52,94 @@ fn default_hotkey_enabled() -> bool {
     true
 }
 
+fn default_dnd_start() -> String {
+    "22:00".into()
+}
+
+fn default_dnd_end() -> String {
+    "07:00".into()
+}
+
+/// 勿扰模式：静音弹窗 / 只记录。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DndMode {
+    /// 弹窗照弹，但不响铃、不发系统通知。
+    Silent,
+    /// 不弹不响，只记到概览的「补看」列表。
+    Record,
+}
+
+impl Default for DndMode {
+    /// 默认只记录：勿扰时段最不打断人的做法。
+    fn default() -> Self {
+        DndMode::Record
+    }
+}
+
+impl DndMode {
+    /// 设置界面里用 0/1 传给 Slint（静音弹窗 / 只记录）。
+    pub fn as_index(self) -> i32 {
+        match self {
+            DndMode::Silent => 0,
+            DndMode::Record => 1,
+        }
+    }
+
+    pub fn from_index(index: i32) -> DndMode {
+        match index {
+            0 => DndMode::Silent,
+            _ => DndMode::Record,
+        }
+    }
+}
+
+/// 解析 "HH:MM" 为当天分钟数（0..=1439），非法返回 None。
+fn parse_hhmm(text: &str) -> Option<u32> {
+    let (hour, minute) = text.trim().split_once(':')?;
+    let hour: u32 = hour.trim().parse().ok()?;
+    let minute: u32 = minute.trim().parse().ok()?;
+    if hour < 24 && minute < 60 {
+        Some(hour * 60 + minute)
+    } else {
+        None
+    }
+}
+
+/// 文本是否是合法的 "HH:MM" 时间。设置面板输入校验用。
+pub fn valid_hhmm(text: &str) -> bool {
+    parse_hhmm(text).is_some()
+}
+
+/// 此刻是否落在勿扰时段内。支持跨午夜（如 22:00-07:00）；含开始、不含结束。
+/// 未启用、起止非法或起止相同，都视为不在勿扰。
+pub fn in_quiet_hours(
+    now: chrono::DateTime<chrono::Local>,
+    enabled: bool,
+    start: &str,
+    end: &str,
+) -> bool {
+    use chrono::Timelike;
+    if !enabled {
+        return false;
+    }
+    let Some(start) = parse_hhmm(start) else {
+        return false;
+    };
+    let Some(end) = parse_hhmm(end) else {
+        return false;
+    };
+    if start == end {
+        return false;
+    }
+    let minute = now.hour() * 60 + now.minute();
+    if start < end {
+        (start..end).contains(&minute)
+    } else {
+        minute >= start || minute < end
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -65,6 +153,18 @@ pub struct Settings {
     /// 是否注册全局快捷键（Ctrl+Alt+R 呼出主窗口，Ctrl+Alt+N 快速新建）。仅 X11 会话生效。
     #[serde(default = "default_hotkey_enabled")]
     pub hotkey_enabled: bool,
+    /// 勿扰时段开关：时段内到期的提醒按 dnd_mode 处理。
+    #[serde(default)]
+    pub dnd_enabled: bool,
+    /// 勿扰开始时间 "HH:MM"（含）。
+    #[serde(default = "default_dnd_start")]
+    pub dnd_start: String,
+    /// 勿扰结束时间 "HH:MM"（不含）；早于开始时间视为跨午夜。
+    #[serde(default = "default_dnd_end")]
+    pub dnd_end: String,
+    /// 勿扰模式：静音弹窗 / 只记录。
+    #[serde(default)]
+    pub dnd_mode: DndMode,
 }
 
 impl Default for Settings {
@@ -74,6 +174,10 @@ impl Default for Settings {
             update_url: String::new(),
             repeat_minutes: DEFAULT_REPEAT_MINUTES,
             hotkey_enabled: true,
+            dnd_enabled: false,
+            dnd_start: default_dnd_start(),
+            dnd_end: default_dnd_end(),
+            dnd_mode: DndMode::default(),
         }
     }
 }
@@ -126,6 +230,10 @@ mod tests {
         assert_eq!(loaded.theme, ThemeMode::Dark);
         assert_eq!(loaded.repeat_minutes, DEFAULT_REPEAT_MINUTES);
         assert!(loaded.hotkey_enabled, "老设置里没有快捷键开关，应默认开启");
+        assert!(!loaded.dnd_enabled, "老设置里没有勿扰配置，应默认关闭");
+        assert_eq!(loaded.dnd_start, "22:00");
+        assert_eq!(loaded.dnd_end, "07:00");
+        assert_eq!(loaded.dnd_mode, DndMode::Record);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -142,6 +250,10 @@ mod tests {
                 update_url: "https://example.com/latest.json".into(),
                 repeat_minutes: 0,
                 hotkey_enabled: false,
+                dnd_enabled: true,
+                dnd_start: "23:30".into(),
+                dnd_end: "06:45".into(),
+                dnd_mode: DndMode::Silent,
             },
         )
         .unwrap();
@@ -151,10 +263,56 @@ mod tests {
         // 关掉（0）也要如实存回来，不能被默认值顶掉。
         assert_eq!(loaded.repeat_minutes, 0);
         assert!(!loaded.hotkey_enabled);
+        assert!(loaded.dnd_enabled);
+        assert_eq!(loaded.dnd_start, "23:30");
+        assert_eq!(loaded.dnd_end, "06:45");
+        assert_eq!(loaded.dnd_mode, DndMode::Silent);
         // 临时文件不应残留。
         assert!(!path.with_extension("json.tmp").exists());
         assert_eq!(ThemeMode::from_index(2), ThemeMode::Dark);
         assert_eq!(ThemeMode::from_index(0).as_index(), 0);
+        assert_eq!(DndMode::from_index(0), DndMode::Silent);
+        assert_eq!(DndMode::from_index(7).as_index(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn at(hour: u32, minute: u32) -> chrono::DateTime<chrono::Local> {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(2026, 10, 19, hour, minute, 0)
+            .single()
+            .unwrap()
+    }
+
+    #[test]
+    fn quiet_hours_disabled_or_invalid_never_matches() {
+        assert!(!in_quiet_hours(at(23, 0), false, "22:00", "07:00"));
+        assert!(!in_quiet_hours(at(23, 0), true, "22:00", "22:00"));
+        assert!(!in_quiet_hours(at(23, 0), true, "25:00", "07:00"));
+        assert!(!in_quiet_hours(at(23, 0), true, "22:00", "7:60"));
+        assert!(!in_quiet_hours(at(23, 0), true, "", "07:00"));
+        assert!(!in_quiet_hours(at(23, 0), true, "22-00", "07:00"));
+    }
+
+    #[test]
+    fn quiet_hours_same_day_range() {
+        // 09:00-12:00：含开始、不含结束。
+        assert!(in_quiet_hours(at(9, 0), true, "09:00", "12:00"));
+        assert!(in_quiet_hours(at(10, 30), true, "09:00", "12:00"));
+        assert!(!in_quiet_hours(at(8, 59), true, "09:00", "12:00"));
+        assert!(!in_quiet_hours(at(12, 0), true, "09:00", "12:00"));
+        assert!(!in_quiet_hours(at(23, 0), true, "09:00", "12:00"));
+    }
+
+    #[test]
+    fn quiet_hours_overnight_range() {
+        // 22:00-07:00 跨午夜。
+        assert!(in_quiet_hours(at(22, 0), true, "22:00", "07:00"));
+        assert!(in_quiet_hours(at(23, 59), true, "22:00", "07:00"));
+        assert!(in_quiet_hours(at(0, 0), true, "22:00", "07:00"));
+        assert!(in_quiet_hours(at(6, 59), true, "22:00", "07:00"));
+        assert!(!in_quiet_hours(at(7, 0), true, "22:00", "07:00"));
+        assert!(!in_quiet_hours(at(21, 59), true, "22:00", "07:00"));
+        assert!(!in_quiet_hours(at(12, 0), true, "22:00", "07:00"));
     }
 }

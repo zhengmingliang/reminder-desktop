@@ -546,6 +546,12 @@ export component MainWindow inherits Window {
     // 全局快捷键开关与状态文案（仅 X11 会话能真正抓到键）。
     in-out property <bool> hotkey-on: true;
     in-out property <string> hotkey-status: "";
+    // 勿扰时段：开关、起止时间（HH:MM）、模式（0 静音弹窗 / 1 只记录）与状态文案。
+    in-out property <bool> dnd-on: false;
+    in-out property <string> dnd-start: "22:00";
+    in-out property <string> dnd-end: "07:00";
+    in-out property <int> dnd-mode: 1;
+    in-out property <string> dnd-status: "";
 
     callback search-changed(string);
     callback filter-changed(string);
@@ -582,6 +588,10 @@ export component MainWindow inherits Window {
     callback theme-changed(int);
     callback repeat-changed(int);
     callback hotkey-changed(bool);
+    callback dnd-changed(bool);
+    callback dnd-start-edited(string);
+    callback dnd-end-edited(string);
+    callback dnd-mode-changed(int);
     callback restore-backup(int);
     callback check-update();
     callback download-update();
@@ -2618,6 +2628,60 @@ export component MainWindow inherits Window {
                             }
                         }
                         Text { text: root.hotkey-status; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
+                        Rectangle { height: 1px; background: Theme.line; }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "勿扰时段";
+                                font-size: 14px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            Toggle {
+                                checked: root.dnd-on;
+                                toggled => { root.dnd-changed(!root.dnd-on); }
+                            }
+                        }
+                        if root.dnd-on : HorizontalLayout {
+                            spacing: 8px;
+                            Field {
+                                horizontal-stretch: 1;
+                                field-height: 30px;
+                                font-size: 13px;
+                                text: root.dnd-start;
+                                placeholder: "22:00";
+                                edited(text) => { root.dnd-start-edited(text); }
+                            }
+                            Text {
+                                text: "至";
+                                font-size: 13px;
+                                color: Theme.text3;
+                                vertical-alignment: center;
+                            }
+                            Field {
+                                horizontal-stretch: 1;
+                                field-height: 30px;
+                                font-size: 13px;
+                                text: root.dnd-end;
+                                placeholder: "07:00";
+                                edited(text) => { root.dnd-end-edited(text); }
+                            }
+                        }
+                        if root.dnd-on : Rectangle {
+                            height: 28px;
+                            border-radius: 6px;
+                            background: Theme.seg;
+                            HorizontalLayout {
+                                spacing: 2px;
+                                SegBtn { label: "静音弹窗"; active: root.dnd-mode == 0; clicked => { root.dnd-mode-changed(0); } }
+                                SegBtn { label: "只记录"; active: root.dnd-mode == 1; clicked => { root.dnd-mode-changed(1); } }
+                            }
+                        }
+                        if root.dnd-status != "" : Text { text: root.dnd-status; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
+                        Text { text: "时段内到期的提醒：静音弹窗照弹但不响铃，只记录则不弹不响、可在概览「补看」"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
                         Rectangle { height: 1px; background: Theme.line; }
 
                         Text { text: "从备份恢复"; font-size: 14px; font-weight: 600; color: Theme.text; }

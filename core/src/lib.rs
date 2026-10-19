@@ -18,5 +18,8 @@ pub use schedule::{
     RecordEntry, SkippedHit, TimelineEntry,
 };
 pub use store::{default_data_dir, Store};
-pub use settings::{load_settings, save_settings, settings_path, Settings, ThemeMode};
+pub use settings::{
+    in_quiet_hours, load_settings, save_settings, settings_path, valid_hhmm, DndMode, Settings,
+    ThemeMode,
+};
 pub use validate::{build_reminder, inspect, next_cron_times, FieldError, Report};
