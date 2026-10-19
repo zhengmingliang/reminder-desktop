@@ -63,6 +63,8 @@ pub struct Draft {
     pub sound_enabled: bool,
     pub sound_path: String,
     pub enabled: bool,
+    /// 提前多少分钟先提示一次；0 表示不提前。
+    pub early_minutes: i32,
 }
 
 impl Draft {
@@ -80,6 +82,7 @@ impl Draft {
             sound_enabled: true,
             sound_path: String::new(),
             enabled: true,
+            early_minutes: 0,
         }
     }
 }
@@ -105,6 +108,12 @@ pub struct Reminder {
     /// 已经按过几次稍后提醒。再次弹出时用来显示「第 N 次」。
     #[serde(default)]
     pub snooze_count: u32,
+    /// 到点前多少分钟先弹一次提示；0 表示不提前。
+    #[serde(default)]
+    pub early_minutes: u32,
+    /// 已经对哪个触发点（毫秒）发过提前提醒，避免同一个点重复弹。
+    #[serde(default)]
+    pub early_notice_sent_ms: Option<i64>,
 }
 
 impl Reminder {
@@ -144,6 +153,7 @@ impl Reminder {
             sound_path: self.sound_path.clone().unwrap_or_default(),
             // 已触发的一次性提醒打开后默认勾选启用，直接保存就会重新开始。
             enabled: self.enabled || self.status == Status::Fired,
+            early_minutes: i32::try_from(self.early_minutes).unwrap_or(0),
         }
     }
 }
@@ -156,4 +166,32 @@ pub fn millis_to_local(ms: i64) -> DateTime<Local> {
 
 pub fn now_ms(now: DateTime<Local>) -> i64 {
     now.timestamp_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 老版本 reminders.json 没有 early_minutes / early_notice_sent_ms，读进来应是不提前。
+    #[test]
+    fn older_reminder_without_early_fields_defaults_to_no_early_notice() {
+        let raw = serde_json::json!({
+            "id": "a",
+            "title": "喝水",
+            "body": "",
+            "schedule": {"kind": "at", "fire_at_ms": 1_800_000_000_000i64},
+            "sound_enabled": true,
+            "sound_path": null,
+            "enabled": true,
+            "status": "pending",
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "last_fired_at_ms": null,
+            "last_occurrence_ms": null
+        });
+        let reminder: Reminder = serde_json::from_value(raw).unwrap();
+        assert_eq!(reminder.early_minutes, 0);
+        assert_eq!(reminder.early_notice_sent_ms, None);
+        assert_eq!(reminder.to_draft().early_minutes, 0);
+    }
 }

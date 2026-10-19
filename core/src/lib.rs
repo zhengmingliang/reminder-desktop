@@ -13,8 +13,8 @@ pub mod validate;
 pub use audio::{check_sound_file, decode_bytes, read_sound, AudioSource, DEFAULT_CHIME};
 pub use model::{millis_to_local, Draft, Kind, Reminder, Schedule, Status};
 pub use schedule::{
-    center_on_monitor, due_reminders, format_point, list_texts, next_wake, recent_records,
-    today_timeline, DueHit, ListText, RecordEntry, TimelineEntry,
+    center_on_monitor, due_reminders, early_reminders, format_point, list_texts, next_wake,
+    recent_records, today_timeline, DueHit, EarlyHit, ListText, RecordEntry, TimelineEntry,
 };
 pub use store::{default_data_dir, Store};
 pub use settings::{load_settings, save_settings, settings_path, Settings, ThemeMode};

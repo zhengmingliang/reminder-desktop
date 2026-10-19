@@ -613,6 +613,7 @@ impl Session {
         ui.set_form_cron(draft.cron.clone().into());
         ui.set_form_sound(draft.sound_enabled);
         ui.set_form_enabled(draft.enabled);
+        ui.set_form_early(draft.early_minutes);
         ui.set_sound_label(sound_label(&self.sound_path.borrow()).into());
         ui.set_delete_enabled(self.loaded.borrow().is_some());
         ui.set_editor_heading(if self.loaded.borrow().is_some() {
@@ -640,6 +641,7 @@ impl Session {
             sound_enabled: ui.get_form_sound(),
             sound_path: self.sound_path.borrow().clone(),
             enabled: ui.get_form_enabled(),
+            early_minutes: ui.get_form_early(),
         }
     }
 

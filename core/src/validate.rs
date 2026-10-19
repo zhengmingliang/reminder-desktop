@@ -167,7 +167,16 @@ pub fn build_reminder(
         last_occurrence_ms,
         snooze_until_ms: None,
         snooze_count: 0,
+        // 提前提醒分钟数只是偏好，换触发时间后也继续沿用；发送记录跟着新计划重置。
+        early_minutes: u32::try_from(draft.early_minutes.max(0)).unwrap_or(0),
+        early_notice_sent_ms: None,
     })
+}
+
+/// 记录某个触发点已经发过提前提醒，避免同一个点反复弹。
+pub fn mark_early_sent(reminder: &mut Reminder, occurrence_ms: i64, now: DateTime<Local>) {
+    reminder.early_notice_sent_ms = Some(occurrence_ms);
+    reminder.updated_at_ms = now_ms(now);
 }
 
 /// 列表上直接启用或暂停。指定时间若已过期，必须先改时间。
@@ -676,6 +685,21 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn early_minutes_roundtrips_through_build_and_draft() {
+        let now = now();
+        let mut draft = draft();
+        draft.minutes = "10".into();
+        let reminder = build_reminder(&draft, None, now, 0).unwrap();
+        assert_eq!(reminder.early_minutes, 0, "默认不提前");
+        assert_eq!(reminder.early_notice_sent_ms, None);
+        draft.early_minutes = 10;
+        let reminder = build_reminder(&draft, None, now, 0).unwrap();
+        assert_eq!(reminder.early_minutes, 10);
+        let back = reminder.to_draft();
+        assert_eq!(back.early_minutes, 10);
     }
 
     #[test]

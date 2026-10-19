@@ -5,10 +5,10 @@ use std::thread;
 use std::time::Duration;
 
 use chrono::Local;
-use reminder_core::validate::{apply_fire, finish_snooze};
+use reminder_core::validate::{apply_fire, finish_snooze, mark_early_sent};
 use reminder_core::{
-    due_reminders, format_point, millis_to_local, next_wake, read_sound, DueHit, Reminder,
-    Schedule, Store,
+    due_reminders, early_reminders, format_point, millis_to_local, next_wake, read_sound, DueHit,
+    EarlyHit, Reminder, Schedule, Store,
 };
 use rodio::{Decoder, OutputStream, Sink};
 
@@ -147,10 +147,26 @@ fn dispatch_due(store: &Mutex<Store>, tx: &mpsc::Sender<Vec<Notice>>, log: &Logg
     let now = Local::now();
     let mut guard = store.lock().unwrap_or_else(|error| error.into_inner());
     let hits = due_reminders(&guard.reminders, now);
-    if hits.is_empty() {
+    let early_hits = early_reminders(&guard.reminders, now);
+    if hits.is_empty() && early_hits.is_empty() {
         return;
     }
-    let mut notices = Vec::with_capacity(hits.len());
+    let mut notices = Vec::with_capacity(hits.len() + early_hits.len());
+    for hit in early_hits {
+        let Some(index) = guard.reminders.iter().position(|item| item.id == hit.id) else {
+            continue;
+        };
+        let notice = early_notice_from(&guard.reminders[index], &hit, now);
+        log.log(
+            "INFO",
+            &format!(
+                "提前提醒 id={} title={} early={}分",
+                notice.id, notice.title, hit.early_minutes
+            ),
+        );
+        mark_early_sent(&mut guard.reminders[index], hit.occurrence_ms, now);
+        notices.push(notice);
+    }
     for hit in hits {
         let Some(index) = guard.reminders.iter().position(|item| item.id == hit.id) else {
             continue;
@@ -210,6 +226,24 @@ fn notice_from(reminder: &Reminder, hit: &DueHit, now: chrono::DateTime<Local>) 
         .to_string(),
         late: hit.late,
         missed: hit.missed,
+    }
+}
+
+fn early_notice_from(reminder: &Reminder, hit: &EarlyHit, now: chrono::DateTime<Local>) -> Notice {
+    let when = format_point(millis_to_local(hit.occurrence_ms), now, true);
+    Notice {
+        id: reminder.id.clone(),
+        title: reminder.title.clone(),
+        body: reminder.body.clone(),
+        when_text: format!("计划时间 {when}"),
+        note: format!("这是提前提醒，到点（约 {} 分钟后）还会再响一次。", hit.early_minutes),
+        sound_enabled: reminder.sound_enabled,
+        sound_path: reminder.sound_path.clone().unwrap_or_default(),
+        snooze: false,
+        snooze_count: reminder.snooze_count,
+        kind_label: "提前提醒".to_string(),
+        late: false,
+        missed: 0,
     }
 }
 

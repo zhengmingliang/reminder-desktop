@@ -49,12 +49,71 @@ pub fn center_on_monitor(
     (x, y)
 }
 
+/// 一次提前提示。`occurrence_ms` 是真正的触发点，`early_minutes` 是提前了多少分钟。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EarlyHit {
+    pub id: String,
+    pub occurrence_ms: i64,
+    pub early_minutes: u32,
+}
+
 pub fn due_reminders(reminders: &[Reminder], now: DateTime<Local>) -> Vec<DueHit> {
     let mut hits = Vec::new();
     for reminder in reminders {
         if let Some(hit) = due_one(reminder, now) {
             hits.push(hit);
         }
+    }
+    hits
+}
+
+/// 下一次触发点（毫秒）。暂停、稍后期间或已完成的一次性提醒返回 None。
+pub fn next_occurrence_ms(reminder: &Reminder) -> Option<i64> {
+    if !reminder.enabled || reminder.snooze_until_ms.is_some() {
+        return None;
+    }
+    match &reminder.schedule {
+        Schedule::Delay { fire_at_ms, .. } | Schedule::At { fire_at_ms }
+            if reminder.status == Status::Pending =>
+        {
+            Some(*fire_at_ms)
+        }
+        Schedule::Cron { expression } if reminder.status != Status::Fired => {
+            let cron = parse_cron(expression).ok()?;
+            let origin_ms = reminder
+                .last_occurrence_ms
+                .unwrap_or(reminder.created_at_ms);
+            cron.find_next_occurrence(&millis_to_local(origin_ms), false)
+                .ok()
+                .map(|time| time.timestamp_millis())
+        }
+        _ => None,
+    }
+}
+
+/// 到点前该弹「提前提醒」的条目。每个触发点只弹一次，真实触发不受影响。
+pub fn early_reminders(reminders: &[Reminder], now: DateTime<Local>) -> Vec<EarlyHit> {
+    let mut hits = Vec::new();
+    let now_ms = now_ms(now);
+    for reminder in reminders {
+        if reminder.early_minutes == 0 {
+            continue;
+        }
+        let Some(occurrence_ms) = next_occurrence_ms(reminder) else {
+            continue;
+        };
+        let early_ms = occurrence_ms - i64::from(reminder.early_minutes) * 60_000;
+        if early_ms > now_ms || occurrence_ms <= now_ms {
+            continue;
+        }
+        if reminder.early_notice_sent_ms == Some(occurrence_ms) {
+            continue;
+        }
+        hits.push(EarlyHit {
+            id: reminder.id.clone(),
+            occurrence_ms,
+            early_minutes: reminder.early_minutes,
+        });
     }
     hits
 }
@@ -208,6 +267,19 @@ pub fn next_wake(reminders: &[Reminder], now: DateTime<Local>) -> Option<DateTim
                 Some(prev) if prev < time => prev,
                 _ => time,
             });
+            // 设了提前提醒时，提前点也要唤醒一次，否则会睡到真实触发点才弹。
+            if reminder.early_minutes > 0
+                && reminder.early_notice_sent_ms != Some(time.timestamp_millis())
+            {
+                let early = time - Duration::minutes(i64::from(reminder.early_minutes));
+                if early <= now {
+                    return Some(now);
+                }
+                best = Some(match best {
+                    Some(prev) if prev < early => prev,
+                    _ => early,
+                });
+            }
         }
     }
     best
@@ -611,6 +683,8 @@ mod tests {
             last_occurrence_ms: None,
             snooze_until_ms: None,
             snooze_count: 0,
+            early_minutes: 0,
+            early_notice_sent_ms: None,
         }
     }
 
@@ -789,6 +863,100 @@ mod tests {
         let hits = due_reminders(std::slice::from_ref(&reminder), jumped);
         assert_eq!(hits.len(), 1);
         assert!(hits[0].late);
+    }
+
+    #[test]
+    fn early_window_fires_once_and_the_real_fire_still_happens() {
+        let fire = fixed(2026, 10, 17, 12, 0, 0);
+        let mut reminder = sample(
+            Schedule::At { fire_at_ms: now_ms(fire) },
+            true,
+            Status::Pending,
+        );
+        reminder.early_minutes = 10;
+        // 提前窗口（11:50）之前不弹。
+        assert!(early_reminders(std::slice::from_ref(&reminder), fire - Duration::minutes(11)).is_empty());
+        // 进入窗口弹一次。
+        let hits = early_reminders(std::slice::from_ref(&reminder), fire - Duration::minutes(10));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].occurrence_ms, now_ms(fire));
+        assert_eq!(hits[0].early_minutes, 10);
+        // 窗口内不触发真实提醒。
+        assert!(due_reminders(std::slice::from_ref(&reminder), fire - Duration::minutes(10)).is_empty());
+        // 标记后同一触发点不再弹。
+        crate::validate::mark_early_sent(&mut reminder, now_ms(fire), fire - Duration::minutes(10));
+        assert!(early_reminders(std::slice::from_ref(&reminder), fire - Duration::minutes(9)).is_empty());
+        // 到点后提前提醒不再补，真实提醒照常。
+        assert!(early_reminders(std::slice::from_ref(&reminder), fire).is_empty());
+        assert_eq!(due_reminders(std::slice::from_ref(&reminder), fire).len(), 1);
+    }
+
+    #[test]
+    fn early_skips_zero_minutes_paused_fired_and_snoozed() {
+        let fire = fixed(2026, 10, 17, 12, 0, 0);
+        let in_window = fire - Duration::minutes(5);
+        let zero = sample(Schedule::At { fire_at_ms: now_ms(fire) }, true, Status::Pending);
+        assert!(early_reminders(std::slice::from_ref(&zero), in_window).is_empty());
+        let mut paused = sample(Schedule::At { fire_at_ms: now_ms(fire) }, false, Status::Pending);
+        paused.early_minutes = 10;
+        assert!(early_reminders(std::slice::from_ref(&paused), in_window).is_empty());
+        let mut fired = sample(Schedule::At { fire_at_ms: now_ms(fire) }, true, Status::Fired);
+        fired.early_minutes = 10;
+        assert!(early_reminders(std::slice::from_ref(&fired), in_window).is_empty());
+        let mut snoozed = sample(Schedule::At { fire_at_ms: now_ms(fire) }, true, Status::Pending);
+        snoozed.early_minutes = 10;
+        snoozed.snooze_until_ms = Some(now_ms(fire + Duration::minutes(5)));
+        assert!(early_reminders(std::slice::from_ref(&snoozed), in_window).is_empty());
+    }
+
+    #[test]
+    fn early_uses_the_next_cron_occurrence() {
+        let origin = fixed(2026, 10, 17, 11, 0, 0);
+        let mut reminder = sample(
+            Schedule::Cron { expression: "0 * * * *".into() },
+            true,
+            Status::Recurring,
+        );
+        reminder.created_at_ms = now_ms(origin);
+        reminder.last_occurrence_ms = Some(now_ms(origin));
+        reminder.early_minutes = 10;
+        // 下一个整点是 12:00，提前窗口从 11:50 开始。
+        assert!(early_reminders(std::slice::from_ref(&reminder), fixed(2026, 10, 17, 11, 49, 0)).is_empty());
+        let hits = early_reminders(std::slice::from_ref(&reminder), fixed(2026, 10, 17, 11, 50, 0));
+        assert_eq!(hits.len(), 1);
+        let occurrence = millis_to_local(hits[0].occurrence_ms);
+        assert_eq!((occurrence.hour(), occurrence.minute()), (12, 0));
+        crate::validate::mark_early_sent(&mut reminder, hits[0].occurrence_ms, origin);
+        assert!(early_reminders(std::slice::from_ref(&reminder), fixed(2026, 10, 17, 11, 55, 0)).is_empty());
+    }
+
+    #[test]
+    fn next_wake_also_wakes_at_the_early_point() {
+        let fire = fixed(2026, 10, 17, 12, 0, 0);
+        let mut reminder = sample(
+            Schedule::At { fire_at_ms: now_ms(fire) },
+            true,
+            Status::Pending,
+        );
+        reminder.early_minutes = 10;
+        let early = fire - Duration::minutes(10);
+        assert_eq!(
+            next_wake(std::slice::from_ref(&reminder), fire - Duration::minutes(30)),
+            Some(early),
+            "应先睡到提前点"
+        );
+        // 提前提醒已发出后，下一次唤醒回到真实触发点。
+        reminder.early_notice_sent_ms = Some(now_ms(fire));
+        assert_eq!(
+            next_wake(std::slice::from_ref(&reminder), fire - Duration::minutes(9)),
+            Some(fire)
+        );
+        // 提前点已过但还没发过：立刻唤醒去补弹。
+        reminder.early_notice_sent_ms = None;
+        assert_eq!(
+            next_wake(std::slice::from_ref(&reminder), fire - Duration::minutes(8)),
+            Some(fire - Duration::minutes(8))
+        );
     }
 
     #[test]

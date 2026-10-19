@@ -513,6 +513,8 @@ export component MainWindow inherits Window {
     in-out property <string> preview-head: "";
     in-out property <string> preview-next: "";
     in-out property <bool> form-sound: true;
+    // 提前提醒分钟数：0 = 不提前，到点前先弹一次提示。
+    in-out property <int> form-early: 0;
     in-out property <string> sound-label: "";
     in-out property <string> sound-error: "";
     in-out property <bool> delete-enabled: false;
@@ -2162,6 +2164,50 @@ export component MainWindow inherits Window {
                                                 }
                                                 if root.sound-error != "" : ErrorText {
                                                     text: root.sound-error;
+                                                }
+
+                                                HorizontalLayout {
+                                                    height: 32px;
+                                                    spacing: 10px;
+                                                    Rectangle {
+                                                        width: 18px;
+                                                        height: 100%;
+                                                        horizontal-stretch: 0;
+                                                        NamedIcon {
+                                                            icon-name: "clock-pri";
+                                                            s: 16px;
+                                                            x: (parent.width - self.width) / 2;
+                                                            y: (parent.height - self.height) / 2;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        width: 84px;
+                                                        horizontal-stretch: 0;
+                                                        text: "提前提醒";
+                                                        font-size: 14px;
+                                                        font-weight: 500;
+                                                        color: Theme.text;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Rectangle {
+                                                        horizontal-stretch: 1;
+                                                        height: 28px;
+                                                        border-radius: 6px;
+                                                        background: Theme.seg;
+                                                        HorizontalLayout {
+                                                            spacing: 2px;
+                                                            SegBtn { label: "不提前"; active: root.form-early == 0; clicked => { root.form-early = 0; root.dirty = true; root.draft-edited(); } }
+                                                            SegBtn { label: "5 分"; active: root.form-early == 5; clicked => { root.form-early = 5; root.dirty = true; root.draft-edited(); } }
+                                                            SegBtn { label: "10 分"; active: root.form-early == 10; clicked => { root.form-early = 10; root.dirty = true; root.draft-edited(); } }
+                                                            SegBtn { label: "30 分"; active: root.form-early == 30; clicked => { root.form-early = 30; root.dirty = true; root.draft-edited(); } }
+                                                            SegBtn { label: "1 小时"; active: root.form-early == 60; clicked => { root.form-early = 60; root.dirty = true; root.draft-edited(); } }
+                                                        }
+                                                    }
+                                                }
+                                                Text {
+                                                    text: "到点前先弹一次提示，到点后照常再响";
+                                                    font-size: 12px;
+                                                    color: Theme.text3;
                                                 }
 
                                                 HorizontalLayout {

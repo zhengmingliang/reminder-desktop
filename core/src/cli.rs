@@ -12,7 +12,7 @@ use crate::model::{Draft, Kind, Reminder};
 /// 解析 `add` 子命令的参数（不含子命令名本身），生成一份表单草稿。
 ///
 /// 支持 `--in 5m|1h|2d|45`、`--at HH:MM`、`--cron "表达式"` 指定触发方式（三选一），
-/// `--body 正文` 填正文，其余非选项词按顺序拼成标题。
+/// `--body 正文` 填正文，`--early 5m` 设提前提醒分钟数，其余非选项词按顺序拼成标题。
 pub fn parse_add(args: &[String], now: DateTime<Local>) -> Result<Draft, String> {
     let mut draft = Draft::blank();
     let mut title_parts: Vec<String> = Vec::new();
@@ -20,6 +20,7 @@ pub fn parse_add(args: &[String], now: DateTime<Local>) -> Result<Draft, String>
     let mut at: Option<String> = None;
     let mut cron: Option<String> = None;
     let mut body: Option<String> = None;
+    let mut early: Option<String> = None;
 
     let mut index = 0;
     while index < args.len() {
@@ -28,6 +29,7 @@ pub fn parse_add(args: &[String], now: DateTime<Local>) -> Result<Draft, String>
             "--at" => at = Some(take_value(args, &mut index, "--at")?),
             "--cron" => cron = Some(take_value(args, &mut index, "--cron")?),
             "--body" => body = Some(take_value(args, &mut index, "--body")?),
+            "--early" => early = Some(take_value(args, &mut index, "--early")?),
             other if other.starts_with("--") => return Err(format!("未知选项：{other}")),
             other => title_parts.push(other.to_string()),
         }
@@ -62,6 +64,13 @@ pub fn parse_add(args: &[String], now: DateTime<Local>) -> Result<Draft, String>
     }
     if let Some(text) = body {
         draft.body = text;
+    }
+    if let Some(spec) = early {
+        let minutes = parse_duration_minutes(&spec)?;
+        if minutes == 0 {
+            return Err("--early 需要大于 0 的时长，例如 5m".into());
+        }
+        draft.early_minutes = i32::try_from(minutes).map_err(|_| "--early 时长太大".to_string())?;
     }
     Ok(draft)
 }
@@ -186,6 +195,14 @@ mod tests {
         assert!(parse_add(&args(&["喝水"]), now()).is_err());
         assert!(parse_add(&args(&["喝水", "--in", "5m", "--at", "09:00"]), now()).is_err());
         assert!(parse_add(&args(&["--in", "5m"]), now()).is_err());
+    }
+
+    #[test]
+    fn add_parses_early_minutes() {
+        let draft = parse_add(&args(&["吃药", "--at", "21:00", "--early", "10m"]), now()).unwrap();
+        assert_eq!(draft.early_minutes, 10);
+        assert!(parse_add(&args(&["吃药", "--in", "5m", "--early", "0m"]), now()).is_err());
+        assert!(parse_add(&args(&["吃药", "--in", "5m", "--early"]), now()).is_err());
     }
 
     #[test]

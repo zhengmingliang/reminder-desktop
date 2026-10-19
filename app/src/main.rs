@@ -27,10 +27,10 @@ fn main() {
 
 const USAGE: &str = "\
 用法：
-  reminder add <标题> --in 5m [--body 正文]      5 分钟后提醒（也可用 1h、2d、45）
-  reminder add <标题> --at 09:30                  今天 09:30（已过则顺延到明天）
-  reminder add <标题> --cron \"0 9 * * 1-5\"       按 Cron 周期提醒
-  直接运行 reminder 打开界面。";
+  reminder add <标题> --in 5m [--body 正文] [--early 1m]   5 分钟后提醒（也可用 1h、2d、45）
+  reminder add <标题> --at 09:30 [--early 10m]             今天 09:30（已过则顺延到明天）
+  reminder add <标题> --cron \"0 9 * * 1-5\"                按 Cron 周期提醒
+  --early 表示到点前先弹一次提示。直接运行 reminder 打开界面。";
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
