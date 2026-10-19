@@ -18,6 +18,7 @@ pub struct Store {
     path: PathBuf,
     pub reminders: Vec<Reminder>,
     persist_blocked: Option<String>,
+    repaired: bool,
 }
 
 impl Store {
@@ -31,6 +32,7 @@ impl Store {
                     path,
                     reminders,
                     persist_blocked: None,
+                    repaired,
                 };
                 if repaired {
                     let _ = store.write_all();
@@ -41,12 +43,18 @@ impl Store {
                 path,
                 reminders: Vec::new(),
                 persist_blocked: Some(reason),
+                repaired: false,
             },
         }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// 主文件损坏、这次是用上一份备份恢复出来的。
+    pub fn repaired_from_backup(&self) -> bool {
+        self.repaired
     }
 
     pub fn persist_block_reason(&self) -> Option<&str> {
@@ -76,6 +84,23 @@ impl Store {
     pub fn save(&mut self) -> Result<(), String> {
         self.ensure_writable()?;
         self.write_all()
+    }
+
+    /// 每天最多留一份自动快照（文件名只带日期）；当天已经有了就跳过。
+    /// 万一某次改动写坏了，除了 `.bak` 的一步回退，还能按天往回找。
+    pub fn daily_backup(&self) -> Result<Option<PathBuf>, String> {
+        let dir = self.backup_dir();
+        let path = dir.join(format!(
+            "reminders-{}.json",
+            chrono::Local::now().format("%Y%m%d")
+        ));
+        if path.exists() {
+            return Ok(None);
+        }
+        let bytes = encode(&self.reminders)?;
+        atomic_write(&path, &bytes)?;
+        prune_backups(&dir, KEEP_BACKUPS);
+        Ok(Some(path))
     }
 
     /// 把当前内存里的提醒写成一份带时间戳的副本，不替换正在使用的文件。
@@ -357,7 +382,12 @@ mod tests {
         let recovered = Store::open(path.clone());
         assert_eq!(recovered.reminders.len(), 1);
         assert!(recovered.persist_block_reason().is_none());
+        assert!(
+            recovered.repaired_from_backup(),
+            "从备份恢复出来时要能被调用方发现"
+        );
         assert!(read_data(&path).is_ok(), "损坏的主文件应从备份恢复");
+        assert!(!Store::open(path.clone()).repaired_from_backup(), "文件正常时不算修复");
 
         fs::write(&path, b"not-json").unwrap();
         fs::write(backup_path(&path), b"also-not").unwrap();
@@ -412,6 +442,21 @@ mod tests {
         assert_eq!(left.len(), KEEP_BACKUPS);
         assert!(left[0].ends_with("reminders-20260101-000012.json"));
         assert!(left[KEEP_BACKUPS - 1].ends_with("reminders-20260101-000003.json"));
+    }
+
+    #[test]
+    fn daily_backup_is_written_once_per_day_and_can_be_listed() {
+        let path = temp_path("daily");
+        let mut store = Store::open(path.clone());
+        store.upsert(one()).unwrap();
+        let first = store.daily_backup().unwrap().expect("首日应生成快照");
+        assert_eq!(
+            first.file_name().unwrap().to_string_lossy(),
+            format!("reminders-{}.json", Local::now().format("%Y%m%d"))
+        );
+        assert_eq!(read_data(&first).unwrap().reminders.len(), 1);
+        assert!(store.daily_backup().unwrap().is_none(), "同一天只留一份");
+        assert!(store.list_backups().contains(&first));
     }
 
     #[test]

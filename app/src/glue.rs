@@ -194,6 +194,19 @@ pub fn run(smoke: bool) -> Result<(), String> {
         log.log("ERROR", &reason);
     }
 
+    // 主文件坏过、这次是拿备份恢复回来的，要明确告诉用户，别让「数据变少了」变成玄学。
+    if lock_store(&store).repaired_from_backup() {
+        log.log("WARN", "提醒数据损坏，已用上一份备份恢复");
+        session.toast("提醒数据损坏，已用上一份备份恢复，可到「从备份恢复」里挑更早的一份");
+    }
+
+    // 每天留一份自动快照，给「从备份恢复」多留一条按天回退的路。
+    match lock_store(&store).daily_backup() {
+        Ok(Some(path)) => log.log("INFO", &format!("今日自动备份：{}", path.display())),
+        Ok(None) => {}
+        Err(error) => log.log("WARN", &format!("自动备份失败：{error}")),
+    }
+
     wire(&ui, &session);
     session.show_blank();
     session.refresh_list();
