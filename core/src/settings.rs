@@ -41,13 +41,33 @@ impl ThemeMode {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// 弹窗一直没被处理时，默认每隔多少分钟再响一次。
+pub const DEFAULT_REPEAT_MINUTES: u32 = 5;
+
+fn default_repeat_minutes() -> u32 {
+    DEFAULT_REPEAT_MINUTES
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub theme: ThemeMode,
     /// 更新清单地址；留空表示不做更新检查。
     #[serde(default)]
     pub update_url: String,
+    /// 弹窗一直没被处理时，每隔多少分钟再响一次；0 表示不再响。
+    #[serde(default = "default_repeat_minutes")]
+    pub repeat_minutes: u32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: ThemeMode::default(),
+            update_url: String::new(),
+            repeat_minutes: DEFAULT_REPEAT_MINUTES,
+        }
+    }
 }
 
 pub fn settings_path(data_dir: &Path) -> PathBuf {
@@ -79,9 +99,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rd-settings-{}", std::process::id()));
         let path = settings_path(&dir);
         assert_eq!(load_settings(&path).theme, ThemeMode::System);
+        assert_eq!(load_settings(&path).repeat_minutes, DEFAULT_REPEAT_MINUTES);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, b"{not json").unwrap();
         assert_eq!(load_settings(&path).theme, ThemeMode::System);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 老版本写出来的 settings.json 没有 repeat_minutes，读回来应拿到默认 5 分钟。
+    #[test]
+    fn older_settings_without_repeat_field_get_the_default() {
+        let dir = std::env::temp_dir().join(format!("rd-settings-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = settings_path(&dir);
+        std::fs::write(&path, br#"{"theme":"dark","update_url":""}"#).unwrap();
+        let loaded = load_settings(&path);
+        assert_eq!(loaded.theme, ThemeMode::Dark);
+        assert_eq!(loaded.repeat_minutes, DEFAULT_REPEAT_MINUTES);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -96,12 +131,15 @@ mod tests {
             &Settings {
                 theme: ThemeMode::Dark,
                 update_url: "https://example.com/latest.json".into(),
+                repeat_minutes: 0,
             },
         )
         .unwrap();
         let loaded = load_settings(&path);
         assert_eq!(loaded.theme, ThemeMode::Dark);
         assert_eq!(loaded.update_url, "https://example.com/latest.json");
+        // 关掉（0）也要如实存回来，不能被默认值顶掉。
+        assert_eq!(loaded.repeat_minutes, 0);
         // 临时文件不应残留。
         assert!(!path.with_extension("json.tmp").exists());
         assert_eq!(ThemeMode::from_index(2), ThemeMode::Dark);

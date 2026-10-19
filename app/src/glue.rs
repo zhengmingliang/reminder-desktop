@@ -76,6 +76,8 @@ struct Session {
     pending_restore: RefCell<Option<PathBuf>>,
     /// 主题模式（浅色 / 跟随系统 / 深色），持久化在 settings.json。
     theme_mode: Cell<ThemeMode>,
+    /// 弹窗一直没被处理时，每隔多少分钟再响一次；0 表示不再响。持久化在 settings.json。
+    repeat_minutes: Cell<u32>,
     /// 已确认的新版本清单，等用户点「下载更新」。
     pending_update: RefCell<Option<Manifest>>,
     /// 后台更新任务的回传通道。
@@ -146,6 +148,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
 
     let settings = load_settings(&settings_path(&data_dir));
     ui.set_theme_mode(settings.theme.as_index());
+    ui.set_repeat_minutes(i32::try_from(settings.repeat_minutes).unwrap_or(5));
     apply_theme(&ui, settings.theme);
 
     let rows = Rc::new(VecModel::<ReminderRow>::default());
@@ -182,6 +185,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
         backups: RefCell::new(Vec::new()),
         pending_restore: RefCell::new(None),
         theme_mode: Cell::new(settings.theme),
+        repeat_minutes: Cell::new(settings.repeat_minutes),
         pending_update: RefCell::new(None),
         update_rx: RefCell::new(update_rx),
         update_tx,
@@ -373,6 +377,10 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_re
     ui.on_theme_changed({
         let session = session.clone();
         move |index| session.set_theme_mode(index)
+    });
+    ui.on_repeat_changed({
+        let session = session.clone();
+        move |minutes| session.set_repeat_minutes(minutes)
     });
     ui.on_check_update({
         let session = session.clone();
@@ -882,6 +890,29 @@ impl Session {
         if let Err(error) = save_settings(&path, &settings) {
             self.log.log("ERROR", &format!("主题设置保存失败：{error}"));
             self.toast("主题设置未能保存");
+        }
+    }
+
+    /// 设置弹窗未确认时的再响间隔（分钟，0 = 关闭），并持久化到 settings.json。
+    fn set_repeat_minutes(&self, minutes: i32) {
+        let minutes = u32::try_from(minutes).unwrap_or(0);
+        self.repeat_minutes.set(minutes);
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_repeat_minutes(i32::try_from(minutes).unwrap_or(0));
+        }
+        let path = settings_path(&self.data_dir);
+        let mut settings = load_settings(&path);
+        settings.repeat_minutes = minutes;
+        if let Err(error) = save_settings(&path, &settings) {
+            self.log.log("ERROR", &format!("提醒设置保存失败：{error}"));
+            self.toast("提醒设置未能保存");
+        } else {
+            let message = if minutes == 0 {
+                "已关闭未确认再响".to_string()
+            } else {
+                format!("未确认时每 {minutes} 分钟再响一次")
+            };
+            self.toast(&message);
         }
     }
 
@@ -1459,7 +1490,7 @@ impl Session {
         };
         popup.set_ui_font(ui_font().into());
         popup.set_window_title(format!("提醒 — {}", notice.title).into());
-        popup.set_heading(notice.title.into());
+        popup.set_heading(notice.title.clone().into());
         popup.set_body(notice.body.into());
         popup.set_when_text(notice.when_text.into());
         popup.set_note(notice.note.into());
@@ -1479,6 +1510,8 @@ impl Session {
         for slot in self.popups.borrow().iter() {
             slot.window.set_stack_count(stack);
         }
+        let repeat_minutes = self.repeat_minutes.get();
+        popup.set_repeat_minutes(i32::try_from(repeat_minutes).unwrap_or(0));
 
         let dismiss_popups = self.popups.clone();
         popup.on_dismiss(move || dismiss_popup(&dismiss_popups, id, true));
@@ -1547,6 +1580,31 @@ impl Session {
                     pin_popup(popup.window());
                 }
             });
+            timers.push(timer);
+        }
+        // 未确认再响：弹窗一直没被处理时，每隔 repeat_minutes 分钟再响一次并重新置顶。
+        // 用户一旦「知道了」或选了稍后提醒，弹窗从 popups 里移除，这个定时器随槽位一起 drop。
+        if repeat_minutes > 0 {
+            let weak_popup = popup.as_weak();
+            let weak_session = Rc::downgrade(self);
+            let title = notice.title.clone();
+            let sound_enabled = notice.sound_enabled;
+            let sound_path = notice.sound_path.clone();
+            let timer = slint::Timer::default();
+            timer.start(
+                slint::TimerMode::Repeated,
+                Duration::from_secs(u64::from(repeat_minutes) * 60),
+                move || {
+                    let Some(popup) = weak_popup.upgrade() else { return };
+                    let Some(session) = weak_session.upgrade() else { return };
+                    session.log.log("INFO", &format!("提醒未确认，再次响铃：{title}"));
+                    if let Err(error) = session.player.play_reminder(sound_enabled, &sound_path) {
+                        session.log.log("WARN", &format!("铃声未播放：{error}"));
+                    }
+                    focus_window(popup.window());
+                    pin_popup(popup.window());
+                },
+            );
             timers.push(timer);
         }
         if let Err(error) = self.player.play_reminder(notice.sound_enabled, &notice.sound_path) {

@@ -532,6 +532,8 @@ export component MainWindow inherits Window {
     in-out property <string> version-text: "";
     in-out property <string> update-text: "";
     in-out property <bool> update-ready: false;
+    // 弹窗一直没处理时的再响间隔（分钟），0 = 不再响；默认 5。
+    in-out property <int> repeat-minutes: 5;
 
     callback search-changed(string);
     callback filter-changed(string);
@@ -565,6 +567,7 @@ export component MainWindow inherits Window {
     callback quit();
     callback autostart-changed(bool);
     callback theme-changed(int);
+    callback repeat-changed(int);
     callback restore-backup(int);
     callback check-update();
     callback download-update();
@@ -2413,7 +2416,7 @@ export component MainWindow inherits Window {
                     x: parent.width - 246px;
                     y: 92px;
                     width: 230px;
-                    height: 500px;
+                    height: 560px;
                     border-radius: 10px;
                     border-width: 1px;
                     border-color: Theme.line;
@@ -2455,6 +2458,22 @@ export component MainWindow inherits Window {
                             }
                         }
                         Text { text: "登录系统后自动运行"; font-size: 12px; color: Theme.text3; }
+                        Rectangle { height: 1px; background: Theme.line; }
+
+                        Text { text: "未确认再响"; font-size: 14px; font-weight: 600; color: Theme.text; }
+                        Rectangle {
+                            height: 28px;
+                            border-radius: 6px;
+                            background: Theme.seg;
+                            HorizontalLayout {
+                                spacing: 2px;
+                                SegBtn { label: "关"; active: root.repeat-minutes == 0; clicked => { root.repeat-changed(0); } }
+                                SegBtn { label: "5 分"; active: root.repeat-minutes == 5; clicked => { root.repeat-changed(5); } }
+                                SegBtn { label: "10 分"; active: root.repeat-minutes == 10; clicked => { root.repeat-changed(10); } }
+                                SegBtn { label: "30 分"; active: root.repeat-minutes == 30; clicked => { root.repeat-changed(30); } }
+                            }
+                        }
+                        Text { text: "弹窗一直没处理时，每隔一段时间再响一次"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
                         Rectangle { height: 1px; background: Theme.line; }
 
                         Text { text: "从备份恢复"; font-size: 14px; font-weight: 600; color: Theme.text; }
