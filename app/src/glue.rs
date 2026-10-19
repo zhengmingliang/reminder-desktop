@@ -1535,6 +1535,7 @@ impl Session {
             return;
         }
         place_window(popup.window(), index, 440, 540, true, true);
+        pin_popup(popup.window());
         let weak = popup.as_weak();
         let mut timers = Vec::new();
         for delay in [80u64, 280] {
@@ -1543,6 +1544,7 @@ impl Session {
             timer.start(slint::TimerMode::SingleShot, Duration::from_millis(delay), move || {
                 if let Some(popup) = weak.upgrade() {
                     place_window(popup.window(), index, 440, 540, true, true);
+                    pin_popup(popup.window());
                 }
             });
             timers.push(timer);
@@ -2393,6 +2395,77 @@ fn with_winit<T>(window: &slint::Window, f: impl FnOnce(&winit::window::Window) 
 fn place_main(window: &slint::Window) {
     place_window(window, 0, 1100, 740, false, false);
 }
+
+/// X11 专用：把提醒弹窗钉在所有工作区的最上层，并主动要求激活。
+/// 只靠 winit 的 AlwaysOnTop 还不够：全屏应用、其它工作区，或「焦点跟随鼠标」
+/// 这类窗口管理器都可能把弹窗埋掉，这里直接把 _NET_WM_STATE / _NET_WM_DESKTOP /
+/// _NET_ACTIVE_WINDOW 发给窗口管理器。纯 Wayland 会话没有这些 EWMH 协议，走系统通知兜底。
+#[cfg(all(unix, not(target_os = "macos")))]
+fn pin_popup(window: &slint::Window) {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        return;
+    }
+    let Some(id) = with_winit(window, |winit_window| {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        match winit_window.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Xlib(handle) => Some(handle.window as u32),
+            RawWindowHandle::Xcb(handle) => Some(handle.window.get()),
+            _ => None,
+        }
+    })
+    .flatten()
+    else {
+        return;
+    };
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{
+        AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, PropMode,
+    };
+    use x11rb::wrapper::ConnectionExt as _;
+    let Ok((connection, screen_num)) = x11rb::connect(None) else {
+        return;
+    };
+    let Some(screen) = connection.setup().roots.get(screen_num) else {
+        return;
+    };
+    let root = screen.root;
+    let intern = |name: &str| {
+        connection
+            .intern_atom(false, name.as_bytes())
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| reply.atom)
+    };
+    let to_wm = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+    // 1) 追加 ABOVE + STICKY：置顶，并且切换工作区也看得见。
+    if let (Some(state), Some(above), Some(sticky)) = (
+        intern("_NET_WM_STATE"),
+        intern("_NET_WM_STATE_ABOVE"),
+        intern("_NET_WM_STATE_STICKY"),
+    ) {
+        let event = ClientMessageEvent::new(32, id, state, [1, above, sticky, 1, 0]);
+        let _ = connection.send_event(false, root, to_wm, event);
+    }
+    // 2) 部分窗口管理器只认 _NET_WM_DESKTOP=0xFFFFFFFF 这种「所有工作区」写法。
+    if let Some(desktop) = intern("_NET_WM_DESKTOP") {
+        let _ = connection.change_property32(
+            PropMode::REPLACE,
+            id,
+            desktop,
+            AtomEnum::CARDINAL,
+            &[0xFFFF_FFFF],
+        );
+    }
+    // 3) 以 pager 身份要求激活（source=2）；「焦点跟随鼠标」的 WM 默认会忽略普通请求。
+    if let Some(active) = intern("_NET_ACTIVE_WINDOW") {
+        let event = ClientMessageEvent::new(32, id, active, [2, x11rb::CURRENT_TIME, 0, 0, 0]);
+        let _ = connection.send_event(false, root, to_wm, event);
+    }
+    let _ = connection.flush();
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn pin_popup(_window: &slint::Window) {}
 
 /// 把主题模式落到实际深浅色：浅色/深色直接生效，跟随系统则实时探测。
 fn apply_theme(ui: &MainWindow, mode: ThemeMode) {
