@@ -417,6 +417,8 @@ pub fn today_timeline(reminders: &[Reminder], now: DateTime<Local>) -> Vec<Timel
     let now_ms = local_to_millis(now);
 
     let mut entries: Vec<TimelineEntry> = Vec::new();
+    // 同一个表达式往往被多条提醒共用，按表达式缓存解析结果，避免每条都重新 parse_cron。
+    let mut cron_cache: std::collections::HashMap<&str, Cron> = std::collections::HashMap::new();
     for reminder in reminders {
         let mut push = |at_ms: i64, kind: &str, status: &str| {
             if at_ms < start_ms || at_ms >= end_ms {
@@ -454,9 +456,15 @@ pub fn today_timeline(reminders: &[Reminder], now: DateTime<Local>) -> Vec<Timel
                 push(*fire_at_ms, kind, status);
             }
             Schedule::Cron { expression } => {
-                let Ok(cron) = parse_cron(expression) else {
-                    continue;
-                };
+                if !cron_cache.contains_key(expression.as_str()) {
+                    match parse_cron(expression) {
+                        Ok(parsed) => {
+                            cron_cache.insert(expression.as_str(), parsed);
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                let cron = &cron_cache[expression.as_str()];
                 let mut cursor = if reminder.created_at_ms > start_ms {
                     millis_to_local(reminder.created_at_ms)
                 } else {
@@ -580,7 +588,7 @@ fn local_to_millis(time: DateTime<Local>) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Schedule, Status};
+    use crate::model::{REMINDER_CAP, Schedule, Status};
     use chrono::TimeZone;
 
     fn fixed(y: i32, m: u32, d: u32, h: u32, mi: u32, s: u32) -> DateTime<Local> {
@@ -797,5 +805,74 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].occurrence_ms, now_ms(at));
         assert!(!hits[0].late);
+    }
+
+    /// 大量提醒时，列表与 Cron 预览的计算量实测（不凭感觉判断）。
+    /// 用 `--nocapture` 可以看到具体耗时；线程在 debug 下也用宽松预算兜底。
+    #[test]
+    fn large_list_compute_stays_within_budget() {
+        use std::time::Instant;
+        let now = fixed(2026, 10, 17, 12, 0, 0);
+        let total = REMINDER_CAP;
+        let mut reminders: Vec<Reminder> = Vec::with_capacity(total);
+        for i in 0..total {
+            // 贴近真实使用：多数是一次性提醒，少量每小时 Cron，极少数每分钟 Cron。
+            let mut reminder = match i % 10 {
+                0 => sample(
+                    Schedule::Cron { expression: "* * * * *".into() },
+                    true,
+                    Status::Recurring,
+                ),
+                1..=3 => sample(
+                    Schedule::Cron { expression: "0 * * * *".into() },
+                    true,
+                    Status::Recurring,
+                ),
+                _ => sample(
+                    Schedule::Delay {
+                        minutes: 30,
+                        fire_at_ms: now_ms(now + Duration::minutes((i as i64 % 240) + 1)),
+                    },
+                    true,
+                    Status::Pending,
+                ),
+            };
+            reminder.id = format!("r{i}");
+            reminder.created_at_ms = now_ms(now - Duration::days(3));
+            reminder.last_occurrence_ms = Some(now_ms(now - Duration::minutes((i as i64 % 180) + 1)));
+            reminders.push(reminder);
+        }
+
+        let started = Instant::now();
+        let due = due_reminders(&reminders, now);
+        let due_ms = started.elapsed();
+
+        let started = Instant::now();
+        let _ = next_wake(&reminders, now);
+        let wake_ms = started.elapsed();
+
+        let started = Instant::now();
+        let timeline = today_timeline(&reminders, now);
+        let timeline_ms = started.elapsed();
+
+        let started = Instant::now();
+        for expression in ["* * * * *", "0 */2 * * *", "0 9 * * 1-5"] {
+            let times = crate::validate::next_cron_times(expression, now, 10).unwrap();
+            assert_eq!(times.len(), 10);
+        }
+        let preview_ms = started.elapsed();
+
+        eprintln!(
+            "{total} 条：due={due_ms:?}（{} 命中）wake={wake_ms:?} timeline={timeline_ms:?}（{} 行）preview×3={preview_ms:?}",
+            due.len(),
+            timeline.len()
+        );
+
+        // 预算按 debug 构建给出的宽松上限，用来兜住 O(n²) 之类的回归；
+        // release 构建大约快一个数量级（5000 条这一档 timeline 约几十毫秒）。
+        assert!(due_ms.as_millis() < 1_000, "due_reminders 太慢：{due_ms:?}");
+        assert!(wake_ms.as_millis() < 100, "next_wake 太慢：{wake_ms:?}");
+        assert!(timeline_ms.as_millis() < 1_000, "today_timeline 太慢：{timeline_ms:?}");
+        assert!(preview_ms.as_millis() < 100, "next_cron_times 太慢：{preview_ms:?}");
     }
 }
