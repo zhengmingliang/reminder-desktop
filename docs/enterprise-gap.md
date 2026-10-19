@@ -21,7 +21,7 @@
 
 ## 跨平台兼容性
 
-- Linux 托盘分两套：Cinnamon / Xfce / MATE 走 XEmbed；KDE 和带 StatusNotifier 的桌面走 Slint 托盘。Wayland 上没有 XEmbed，纯 Wayland 会话目前没有托盘图标。
+- Linux 托盘分两套：Cinnamon / Xfce / MATE 走 XEmbed；KDE 和带 StatusNotifier 的桌面走 Slint 托盘。纯 Wayland 会话跳过 XEmbed，只走 StatusNotifier，并在注册失败后轮询重试；会话里始终没有 StatusNotifier 宿主（裸 wlroots 合成器）时仍然没有托盘图标，只能靠再次运行程序唤回主窗口。
 - 没有签名的 Windows 安装包、macOS 公证包和 Linux 软件包。现在是一个可执行文件，发行和升级都要手工替换。
 - 没有开机自启的安装选项。关进程之后要用户自己再打开。
 - 多显示器已按光标所在屏幕弹出（纯 X11 会话查询全局光标；纯 Wayland 拿不到全局光标，退回主屏），但没有「记住上次屏幕」的策略。

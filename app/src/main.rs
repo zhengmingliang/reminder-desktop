@@ -8,6 +8,8 @@ mod instance;
 mod logutil;
 mod notify;
 mod runtime;
+mod session;
+mod sni;
 mod system_theme;
 mod update;
 mod xembed_tray;

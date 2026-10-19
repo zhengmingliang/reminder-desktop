@@ -693,6 +693,8 @@ export component MainWindow inherits Window {
     in-out property <bool> log-open: false;
     in-out property <string> log-text: "";
     in-out property <string> data-dir-status: "";
+    /// 设置面板里的托盘现状：走的哪条路，没有托盘时怎么唤回主窗口。
+    in-out property <string> tray-status: "";
 
     callback search-changed(string);
     callback filter-changed(string);
@@ -3209,6 +3211,12 @@ export component MainWindow inherits Window {
                             }
                             Text {
                                 text: "开启时点关闭按钮收进托盘、后台继续提醒；关闭时点关闭按钮直接退出程序";
+                                font-size: 12px;
+                                color: Theme.text3;
+                                wrap: word-wrap;
+                            }
+                            if root.tray-status != "" : Text {
+                                text: root.tray-status;
                                 font-size: 12px;
                                 color: Theme.text3;
                                 wrap: word-wrap;

@@ -68,7 +68,14 @@ cargo build --release -p reminder-desktop
 
 Linux 运行时需要 `libfontconfig`、`libasound`、`libxkbcommon`、`libxcb`。编译时如果没有 `fontconfig.pc`，本目录的 `.cargo/config.toml` 会使用 `packaging/pkgconfig/fontconfig.pc`。有开发包时也可以直接安装 `libfontconfig1-dev`。
 
-Linux Mint Cinnamon 的面板是传统系统托盘，不提供 `org.kde.StatusNotifierWatcher`。程序在检测到 `_NET_SYSTEM_TRAY_S0` 时嵌入 XEmbed 图标。没有这块托盘时才退回 StatusNotifier。纯 Wayland 会话两种都没有，关掉窗口后只能再次运行程序把它叫回来。
+Linux 托盘分两条路，程序自己判断走哪条，设置面板里会写明当前落在哪条路上：
+
+- **XEmbed**：检测到 `_NET_SYSTEM_TRAY_S0` 时把图标嵌进面板（Linux Mint Cinnamon、Xfce、MATE 这类传统托盘）。
+- **StatusNotifierItem**：X11 会话里没有 XEmbed 托盘时退回这条（KDE、装了 AppIndicator 扩展的 GNOME）。
+
+纯 Wayland 会话没有 X 服务器，XEmbed 直接跳过，只走 StatusNotifier。而 StatusNotifier 需要会话总线上有 `org.kde.StatusNotifierWatcher` 宿主（KDE Plasma、waybar 会提供；裸 wlroots 合成器默认没有）。Slint 内部会吞掉 ksni 的注册失败，所以程序在建完托盘后会回查总线确认图标真的挂上去了；没挂上就每 20 秒重试一次，最多试 10 分钟，因此先启动程序、后拉起 waybar 或装 GNOME 扩展也能补上图标。
+
+会话里始终没有托盘宿主时，隐藏起来的窗口没有图标可以叫回来，这时再次运行 `reminder-desktop` 会通过单实例机制唤回主窗口（提醒不受影响，调度在进程内照常跑）。
 
 和成熟企业通知产品的差距写在 `docs/enterprise-gap.md`。
 

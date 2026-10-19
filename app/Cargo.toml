@@ -20,6 +20,12 @@ slint = { version = "=1.18.1", default-features = false, features = [
     "system-tray",
 ] }
 winit = "0.30.13"
+# 只用来回查会话总线（确认托盘图标是否真的注册上）。ksni 已经把 zbus 带进依赖树，
+# 这里显式开 blocking-api，避免 Slint 吞掉注册失败后无从判断。
+zbus = { version = "5.19", default-features = false, features = [
+    "async-io",
+    "blocking-api",
+] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 x11rb = { version = "0.13", features = ["randr"] }
 

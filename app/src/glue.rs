@@ -22,6 +22,7 @@ use crate::hotkey::{self, HotkeyCommand};
 use crate::instance::{self, Launch};
 use crate::logutil::Logger;
 use crate::runtime::{self, Notice, Player, Wake};
+use crate::session::SessionKind;
 use crate::xembed_tray::{self, TrayCommand};
 
 slint::include_modules!();
@@ -41,6 +42,23 @@ enum BrowserMode {
     Sound,
     Import,
 }
+
+/// 托盘图标最终落在哪条实现上。设置面板要照这个向用户解释现状。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrayKind {
+    /// 嵌进了 X11 面板的系统托盘（XEmbed）。
+    XEmbed,
+    /// 注册成了 StatusNotifierItem，由桌面环境的托盘宿主显示。
+    StatusNotifier,
+    /// 两条路都没走通：会话里既没有 XEmbed 托盘，也没有 StatusNotifier 宿主。
+    None,
+}
+
+/// StatusNotifier 注册失败后隔多久重试一次，以及最多重试几次。
+/// 20 秒 × 30 次 = 10 分钟：足够覆盖「先进桌面、后启动 waybar / 装 GNOME 扩展」这类情况，
+/// 又不会让一个没有托盘宿主的会话被无限期轮询下去。
+const TRAY_RETRY_INTERVAL_TICKS: u32 = 100;
+const TRAY_RETRY_MAX: u32 = 30;
 
 /// 两个可自定的组合键分别管什么。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -78,6 +96,12 @@ struct Session {
     tray: RefCell<Option<AppTray>>,
     /// XEmbed 托盘线程的消息发送端：用来切换「有稍后提醒」的角标。
     tray_icon: RefCell<Option<std::sync::mpsc::Sender<xembed_tray::TrayIconMsg>>>,
+    /// 托盘当前落在哪条实现上。
+    tray_kind: Cell<TrayKind>,
+    /// 启动时的会话类型，托盘状态文案里要带上。
+    session_kind: Cell<SessionKind>,
+    /// StatusNotifier 注册失败后已重试的次数。
+    tray_retries: Cell<u32>,
     menu: RefCell<Option<TrayMenu>>,
     store: Arc<Mutex<Store>>,
     rows: Rc<VecModel<ReminderRow>>,
@@ -193,31 +217,27 @@ pub fn run(smoke: bool, after_update: bool) -> Result<(), String> {
     let store = Arc::new(Mutex::new(Store::open(data_dir.join("reminders.json"))));
     let ui = MainWindow::new().map_err(|error| format!("无法创建主窗口：{error}"))?;
     let (tray_tx, tray_rx) = mpsc::channel::<TrayCommand>();
-    let (icon_tx, xembed) = match xembed_tray::spawn(tray_tx) {
-        Ok(tx) => {
-            log.log("INFO", "已注册 XEmbed 托盘图标");
-            (Some(tx), true)
-        }
-        Err(error) => {
-            log.log("WARN", &format!("XEmbed 托盘不可用：{error}"));
-            (None, false)
-        }
-    };
-    let slint_tray = if xembed {
-        None
-    } else {
-        match AppTray::new() {
-            Ok(tray) => {
-                let _ = tray.show();
-                log.log("INFO", "已注册 StatusNotifier 托盘图标");
-                Some(tray)
+    let session_kind = crate::session::kind();
+    let (icon_tx, xembed) = if session_kind.xembed_possible() {
+        match xembed_tray::spawn(tray_tx) {
+            Ok(tx) => {
+                log.log("INFO", "已注册 XEmbed 托盘图标");
+                (Some(tx), true)
             }
             Err(error) => {
-                log.log("ERROR", &format!("托盘图标创建失败：{error}"));
-                None
+                log.log("WARN", &format!("XEmbed 托盘不可用：{error}"));
+                (None, false)
             }
         }
+    } else {
+        // 纯 Wayland 没有 X 服务器，XEmbed 协议无从谈起，连探测都不必做。
+        log.log("INFO", "纯 Wayland 会话，跳过 XEmbed 托盘，改走 StatusNotifier");
+        drop(tray_tx);
+        (None, false)
     };
+    // StatusNotifier 托盘不在这里建：Slint 会吞掉 ksni 的注册失败，只能建完之后
+    // 回查会话总线才知道图标有没有真的挂上去，这一步统一交给 session.try_sni_tray()。
+    let tray_kind = if xembed { TrayKind::XEmbed } else { TrayKind::None };
     ui.set_ui_font(ui_font().into());
     ui.set_mono_font(mono_font().into());
     ui.set_autostart_on(crate::autostart::is_enabled());
@@ -238,8 +258,11 @@ pub fn run(smoke: bool, after_update: bool) -> Result<(), String> {
 
     let session = Rc::new(Session {
         ui: ui.as_weak(),
-        tray: RefCell::new(slint_tray),
+        tray: RefCell::new(None),
         tray_icon: RefCell::new(icon_tx),
+        tray_kind: Cell::new(tray_kind),
+        session_kind: Cell::new(session_kind),
+        tray_retries: Cell::new(0),
         menu: RefCell::new(None),
         store: store.clone(),
         rows,
@@ -331,6 +354,10 @@ pub fn run(smoke: bool, after_update: bool) -> Result<(), String> {
     }
 
     wire(&ui, &session);
+    // 没有 XEmbed 托盘时试一次 StatusNotifier；注册失败会由定时器接着重试。
+    if !xembed {
+        session.try_sni_tray();
+    }
     session.show_blank();
     session.refresh_list();
     session.refresh_backups();
@@ -378,6 +405,9 @@ pub fn run(smoke: bool, after_update: bool) -> Result<(), String> {
         timed.poll_show_request();
         timed.poll_add_requests();
         timed.poll_updates();
+        if ticks % TRAY_RETRY_INTERVAL_TICKS == 0 {
+            timed.poll_tray();
+        }
         let batch: Vec<Vec<Notice>> = notice_rx_timer.borrow_mut().try_iter().collect();
         for notices in batch {
             timed.show_notices(notices);
@@ -790,32 +820,37 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {
             move || session.maximize_main()
         });
 
-    if let Some(tray) = session.tray.borrow().as_ref() {
-        tray.on_show_window({
-            let session = session.clone();
-            move || session.show_main()
-        });
-        tray.on_toggle_window({
-            let session = session.clone();
-            move || session.toggle_main()
-        });
-        tray.on_new_reminder({
-            let session = session.clone();
-            move || session.new_reminder_from_tray()
-        });
-        tray.on_backup({
-            let session = session.clone();
-            move || session.backup_from_tray()
-        });
-        tray.on_open_settings({
-            let session = session.clone();
-            move || session.open_settings()
-        });
-        tray.on_quit_app({
-            let session = session.clone();
-            move || session.quit_from_tray()
-        });
-    }
+    // 托盘不在这里建：XEmbed 那条路在 run() 里已经定下来，StatusNotifier 那条路
+    // 要建完再回查总线确认，统一走 session.try_sni_tray()。
+    session.refresh_tray_status();
+}
+
+/// 托盘菜单/单击的回调。启动和重试注册走的都是这一套。
+fn bind_tray(tray: &AppTray, session: &Rc<Session>) {
+    tray.on_show_window({
+        let session = session.clone();
+        move || session.show_main()
+    });
+    tray.on_toggle_window({
+        let session = session.clone();
+        move || session.toggle_main()
+    });
+    tray.on_new_reminder({
+        let session = session.clone();
+        move || session.new_reminder_from_tray()
+    });
+    tray.on_backup({
+        let session = session.clone();
+        move || session.backup_from_tray()
+    });
+    tray.on_open_settings({
+        let session = session.clone();
+        move || session.open_settings()
+    });
+    tray.on_quit_app({
+        let session = session.clone();
+        move || session.quit_from_tray()
+    });
 }
 
 impl Session {
@@ -3154,6 +3189,87 @@ impl Session {
         if let Some(tx) = self.tray_icon.borrow().as_ref() {
             let _ = tx.send(xembed_tray::TrayIconMsg::Badge(has_snooze));
             let _ = tx.send(xembed_tray::TrayIconMsg::Tooltip(self.tip_text()));
+        }
+    }
+
+    /// 托盘一直没注册上时定期重试：waybar、GNOME 的 AppIndicator 扩展都是登录之后
+    /// 才把 `org.kde.StatusNotifierWatcher` 挂上会话总线的，晚一步注册也该补上图标。
+    /// 定时器回调本来就在事件循环线程上，可以直接建托盘实例。
+    fn poll_tray(self: &Rc<Self>) {
+        if self.tray_kind.get() != TrayKind::None || self.tray.borrow().is_some() {
+            return;
+        }
+        if self.tray_retries.get() >= TRAY_RETRY_MAX {
+            return;
+        }
+        self.try_sni_tray();
+    }
+
+    /// 试一次 StatusNotifier。ksni 的注册是延后的，要等事件循环转起来才发生，
+    /// 所以建完先放着，稍后再回查会话总线确认图标有没有真的挂上去。
+    fn try_sni_tray(self: &Rc<Self>) {
+        if self.tray_kind.get() != TrayKind::None || self.tray.borrow().is_some() {
+            return;
+        }
+        match AppTray::new() {
+            Ok(tray) => {
+                let _ = tray.show();
+                bind_tray(&tray, self);
+                *self.tray.borrow_mut() = Some(tray);
+                let session = self.clone();
+                slint::Timer::single_shot(Duration::from_millis(800), move || {
+                    session.confirm_sni_tray();
+                });
+            }
+            Err(error) => self
+                .log
+                .log("WARN", &format!("StatusNotifier 托盘创建失败：{error}")),
+        }
+    }
+
+    /// 回查总线：本进程的 StatusNotifierItem 名字还活着，说明宿主收下了图标；
+    /// 名字没了说明这一轮注册失败（多半是会话里没有托盘宿主），丢掉实例等下一轮。
+    fn confirm_sni_tray(self: &Rc<Self>) {
+        if self.tray_kind.get() != TrayKind::None {
+            return;
+        }
+        if crate::sni::registered() {
+            self.tray_kind.set(TrayKind::StatusNotifier);
+            self.log.log("INFO", "已注册 StatusNotifier 托盘图标");
+            self.update_tip();
+        } else {
+            *self.tray.borrow_mut() = None;
+            self.tray_retries.set(self.tray_retries.get() + 1);
+            let retries = self.tray_retries.get();
+            if retries == 1 {
+                self.log
+                    .log("WARN", "StatusNotifier 托盘注册失败：会话里没有托盘宿主，先每 20 秒重试");
+            } else if retries >= TRAY_RETRY_MAX {
+                // 试了十分钟都没挂上，这个会话大概真的没有托盘宿主，不再轮询。
+                self.log.log("WARN", "会话内始终没有托盘宿主，托盘图标不可用");
+            }
+        }
+        self.refresh_tray_status();
+    }
+
+    /// 设置面板里那行托盘现状：说清走的哪条路；没有托盘时告诉用户怎么唤回主窗口。
+    fn refresh_tray_status(&self) {
+        let kind = self.session_kind.get().label();
+        let text = match self.tray_kind.get() {
+            TrayKind::XEmbed => format!("当前会话：{kind} · 托盘图标已嵌入系统托盘"),
+            TrayKind::StatusNotifier => format!("当前会话：{kind} · 已注册 StatusNotifier 托盘图标"),
+            TrayKind::None => {
+                // 没有托盘时窗口藏起来就没人能叫回来了，好在单实例唤回仍然有效。
+                let tail = "关闭窗口后再次运行本程序即可唤回主窗口";
+                if self.tray_retries.get() < TRAY_RETRY_MAX {
+                    format!("当前会话：{kind} · 还没找到托盘宿主，后台每 20 秒重试一次；{tail}")
+                } else {
+                    format!("当前会话：{kind} · 会话内没有托盘宿主，托盘图标不可用；{tail}")
+                }
+            }
+        };
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_tray_status(text.into());
         }
     }
 
