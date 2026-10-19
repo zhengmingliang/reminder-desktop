@@ -552,6 +552,8 @@ export component MainWindow inherits Window {
     in-out property <string> dnd-end: "07:00";
     in-out property <int> dnd-mode: 1;
     in-out property <string> dnd-status: "";
+    // 关闭按钮行为：true 隐藏到托盘后台运行，false 直接退出。
+    in-out property <bool> close-to-tray-on: true;
 
     callback search-changed(string);
     callback filter-changed(string);
@@ -579,7 +581,6 @@ export component MainWindow inherits Window {
     callback use-default-sound();
     callback dialog-confirm();
     callback dialog-cancel();
-    callback hide-to-tray();
     callback open-settings();
     callback minimize-window();
     callback maximize-window();
@@ -592,6 +593,8 @@ export component MainWindow inherits Window {
     callback dnd-start-edited(string);
     callback dnd-end-edited(string);
     callback dnd-mode-changed(int);
+    callback close-to-tray-changed(bool);
+    callback close-requested();
     callback restore-backup(int);
     callback check-update();
     callback download-update();
@@ -632,10 +635,10 @@ export component MainWindow inherits Window {
                     caption: "桌面提醒";
                     request-minimize => { root.minimize-window(); }
                     request-maximize => { root.maximize-window(); }
-                    request-close => { root.hide-to-tray(); }
+                    request-close => { root.close-requested(); }
                 }
 
-                // 顶栏：52px，品牌 + 状态 + 下一次 + 分隔线 + 三个 32px 图标按钮
+                // 顶栏：52px，品牌 + 状态 + 下一次 + 分隔线 + 设置按钮
                 // （Slint 的 alignment 只影响主轴，固定高度子元素需要包一层全高容器做垂直居中。）
                 Rectangle {
                     height: 52px;
@@ -805,7 +808,7 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        // 四个 32px 图标按钮：设置、备份、隐藏到托盘、退出；整高容器里垂直居中，间距 4。
+                        // 单个 32px 图标按钮：设置（备份、退出等已迁入设置面板）；整高容器里垂直居中。
                         HorizontalLayout {
                             height: 100%;
                             spacing: 4px;
@@ -817,49 +820,9 @@ export component MainWindow inherits Window {
                                     icon-name: "gear-text2";
                                     tip-x-offset: 0px;
                                     tip-title: "设置";
-                                    tip-body: "主题切换、开机自启动与从备份恢复。";
+                                    tip-body: "主题、自启动、勿扰、备份、关闭行为与退出。";
                                     y: (parent.height - self.height) / 2;
                                     clicked => { root.open-settings(); }
-                                }
-                            }
-                            Rectangle {
-                                width: 32px;
-                                height: 100%;
-                                horizontal-stretch: 0;
-                                ToolBtn {
-                                    icon-name: "download-text2";
-                                    tip-x-offset: -96px;
-                                    tip-title: "备份";
-                                    tip-body: "把全部提醒导出为备份文件，可用于迁移或恢复。";
-                                    y: (parent.height - self.height) / 2;
-                                    clicked => { root.backup(); }
-                                }
-                            }
-                            Rectangle {
-                                width: 32px;
-                                height: 100%;
-                                horizontal-stretch: 0;
-                                ToolBtn {
-                                    icon-name: "tray-down-text2";
-                                    tip-x-offset: -96px;
-                                    tip-title: "隐藏到托盘";
-                                    tip-body: "关闭窗口，程序继续在后台按时提醒。点击托盘图标可重新打开。";
-                                    y: (parent.height - self.height) / 2;
-                                    clicked => { root.hide-to-tray(); }
-                                }
-                            }
-                            Rectangle {
-                                width: 32px;
-                                height: 100%;
-                                horizontal-stretch: 0;
-                                ToolBtn {
-                                    icon-name: "power-text2";
-                                    tip-x-offset: -96px;
-                                    tip-title: "退出";
-                                    tip-body: "完全退出程序。退出后不会再弹出任何提醒。";
-                                    danger: true;
-                                    y: (parent.height - self.height) / 2;
-                                    clicked => { root.quit(); }
                                 }
                             }
                         }
@@ -2633,6 +2596,29 @@ export component MainWindow inherits Window {
                         HorizontalLayout {
                             spacing: 8px;
                             Text {
+                                text: "关闭窗口时隐藏到托盘";
+                                font-size: 14px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            Toggle {
+                                checked: root.close-to-tray-on;
+                                toggled => { root.close-to-tray-changed(!root.close-to-tray-on); }
+                            }
+                        }
+                        Text {
+                            text: "开启时点关闭按钮收进托盘、后台继续提醒；关闭时点关闭按钮直接退出程序";
+                            font-size: 12px;
+                            color: Theme.text3;
+                            wrap: word-wrap;
+                        }
+                        Rectangle { height: 1px; background: Theme.line; }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
                                 text: "勿扰时段";
                                 font-size: 14px;
                                 font-weight: 600;
@@ -2684,9 +2670,33 @@ export component MainWindow inherits Window {
                         Text { text: "时段内到期的提醒：静音弹窗照弹但不响铃，只记录则不弹不响、可在概览「补看」"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
                         Rectangle { height: 1px; background: Theme.line; }
 
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "备份";
+                                font-size: 14px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            Btn {
+                                label: "立即备份";
+                                pad-x: 10px;
+                                font-size: 12px;
+                                clicked => { root.backup(); }
+                            }
+                        }
+                        Text {
+                            text: "把全部提醒导出为备份文件，可用于迁移或恢复";
+                            font-size: 12px;
+                            color: Theme.text3;
+                            wrap: word-wrap;
+                        }
+
                         Text { text: "从备份恢复"; font-size: 14px; font-weight: 600; color: Theme.text; }
                         if root.backup-names.length == 0 : Text {
-                            text: "暂无备份，点击顶栏「备份」生成";
+                            text: "暂无备份，点击上方「立即备份」生成";
                             font-size: 12px;
                             color: Theme.text3;
                             wrap: word-wrap;
@@ -2735,6 +2745,30 @@ export component MainWindow inherits Window {
                                 pad-x: 10px;
                                 font-size: 12px;
                                 clicked => { root.download-update(); }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.line; }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                Text { text: "完全退出"; font-size: 14px; font-weight: 600; color: Theme.text; }
+                                Text {
+                                    text: "退出后不会再弹出任何提醒，点托盘图标可重新启动";
+                                    font-size: 12px;
+                                    color: Theme.text3;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            Btn {
+                                label: "退出程序";
+                                danger: true;
+                                pad-x: 10px;
+                                font-size: 12px;
+                                clicked => { root.quit(); }
                             }
                         }
                     }

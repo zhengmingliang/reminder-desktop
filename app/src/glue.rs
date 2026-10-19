@@ -85,6 +85,8 @@ struct Session {
     dnd_start: RefCell<String>,
     dnd_end: RefCell<String>,
     dnd_mode: Cell<DndMode>,
+    /// 点关闭按钮的行为：true 隐藏到托盘后台运行，false 直接退出。持久化在 settings.json。
+    close_to_tray: Cell<bool>,
     /// 已确认的新版本清单，等用户点「下载更新」。
     pending_update: RefCell<Option<Manifest>>,
     /// 全局快捷键抓键线程；None 表示关闭或启用失败。
@@ -202,6 +204,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
         dnd_start: RefCell::new(settings.dnd_start.clone()),
         dnd_end: RefCell::new(settings.dnd_end.clone()),
         dnd_mode: Cell::new(settings.dnd_mode),
+        close_to_tray: Cell::new(settings.close_to_tray),
         pending_update: RefCell::new(None),
         hotkey: RefCell::new(None),
         hotkey_tx,
@@ -226,6 +229,9 @@ pub fn run(smoke: bool) -> Result<(), String> {
     ui.set_dnd_end(settings.dnd_end.clone().into());
     ui.set_dnd_mode(settings.dnd_mode.as_index());
     session.sync_dnd_status("");
+
+    // 关闭按钮行为开关：回显到设置面板。
+    ui.set_close_to_tray_on(settings.close_to_tray);
 
     // 主文件坏过、这次是拿备份恢复回来的，要明确告诉用户，别让「数据变少了」变成玄学。
     if lock_store(&store).repaired_from_backup() {
@@ -361,13 +367,18 @@ pub fn run(smoke: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_requested({
+fn wire(ui: &MainWindow, session: &Rc<Session>) {
+    // 关闭按钮（标题栏 X / Alt+F4 / wmctrl）：按设置隐藏到托盘或退出。
+    ui.window().on_close_requested({
         let session = session.clone();
         move || {
-            session.update_tip();
-            session.log.log("INFO", "主窗口关闭，转入后台");
+            session.handle_window_close();
             slint::CloseRequestResponse::HideWindow
         }
+    });
+    ui.on_close_requested({
+        let session = session.clone();
+        move || session.handle_window_close()
     });
 
     ui.on_draft_edited({
@@ -405,9 +416,9 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_re
         let session = session.clone();
         move || session.close_dialog()
     });
-    ui.on_hide_to_tray({
+    ui.on_close_to_tray_changed({
         let session = session.clone();
-        move || session.hide_main()
+        move |on| session.set_close_to_tray(on)
     });
     ui.on_open_settings({
         let session = session.clone();
@@ -1911,6 +1922,39 @@ impl Session {
             let _ = ui.hide();
         }
         self.update_tip();
+    }
+
+    /// 点关闭按钮（或收到窗口关闭请求）：按设置隐藏到托盘或完全退出。
+    fn handle_window_close(&self) {
+        if self.close_to_tray.get() {
+            self.log.log("INFO", "主窗口关闭，转入后台");
+            self.hide_main();
+        } else {
+            self.log.log("INFO", "主窗口关闭，按设置退出程序");
+            let _ = slint::quit_event_loop();
+        }
+    }
+
+    /// 设置关闭按钮行为（true = 隐藏到托盘，false = 退出）并持久化。
+    fn set_close_to_tray(&self, on: bool) {
+        let path = settings_path(&self.data_dir);
+        let mut settings = load_settings(&path);
+        settings.close_to_tray = on;
+        if let Err(error) = save_settings(&path, &settings) {
+            self.log.log("ERROR", &format!("关闭行为设置保存失败：{error}"));
+            self.toast("关闭行为设置未能保存");
+            return;
+        }
+        self.close_to_tray.set(on);
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_close_to_tray_on(on);
+        }
+        self.log.log("INFO", &format!("关闭按钮行为：{}", if on { "隐藏到托盘" } else { "退出程序" }));
+        self.toast(if on {
+            "关闭窗口时将隐藏到托盘"
+        } else {
+            "关闭窗口时将退出程序"
+        });
     }
 
     /// 托盘左键：窗口可见则隐藏，否则显示并置前。

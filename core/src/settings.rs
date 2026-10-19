@@ -70,6 +70,10 @@ pub enum DndMode {
     Record,
 }
 
+fn default_close_to_tray() -> bool {
+    true
+}
+
 impl Default for DndMode {
     /// 默认只记录：勿扰时段最不打断人的做法。
     fn default() -> Self {
@@ -165,6 +169,9 @@ pub struct Settings {
     /// 勿扰模式：静音弹窗 / 只记录。
     #[serde(default)]
     pub dnd_mode: DndMode,
+    /// 点关闭按钮时的行为：true 隐藏到托盘后台继续提醒，false 直接退出。
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -178,6 +185,7 @@ impl Default for Settings {
             dnd_start: default_dnd_start(),
             dnd_end: default_dnd_end(),
             dnd_mode: DndMode::default(),
+            close_to_tray: true,
         }
     }
 }
@@ -234,6 +242,7 @@ mod tests {
         assert_eq!(loaded.dnd_start, "22:00");
         assert_eq!(loaded.dnd_end, "07:00");
         assert_eq!(loaded.dnd_mode, DndMode::Record);
+        assert!(loaded.close_to_tray, "老设置里没有关闭行为开关，应默认隐藏到托盘");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -254,6 +263,7 @@ mod tests {
                 dnd_start: "23:30".into(),
                 dnd_end: "06:45".into(),
                 dnd_mode: DndMode::Silent,
+                close_to_tray: false,
             },
         )
         .unwrap();
@@ -267,6 +277,7 @@ mod tests {
         assert_eq!(loaded.dnd_start, "23:30");
         assert_eq!(loaded.dnd_end, "06:45");
         assert_eq!(loaded.dnd_mode, DndMode::Silent);
+        assert!(!loaded.close_to_tray);
         // 临时文件不应残留。
         assert!(!path.with_extension("json.tmp").exists());
         assert_eq!(ThemeMode::from_index(2), ThemeMode::Dark);
