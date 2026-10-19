@@ -639,6 +639,12 @@ export component MainWindow inherits Window {
     in-out property <bool> browser-open: false;
     in-out property <string> browser-path: "";
     in-out property <string> browser-picked: "";
+    // 文件浏览器的用途：标题、确认按钮文案、是否显示「默认铃声」都跟着变。
+    in-out property <string> browser-title: "选择提示音";
+    in-out property <string> browser-action: "使用此文件";
+    in-out property <bool> browser-pick-sound: true;
+    // 导入导出的结果提示。
+    in-out property <string> transfer-status: "";
     in-out property <[DirEntry]> dir-entries: [];
     in-out property <string> dialog: "";
     in-out property <string> dialog-title: "";
@@ -747,6 +753,9 @@ export component MainWindow inherits Window {
     callback dismiss-missed();
     callback open-data-dir();
     callback toggle-log();
+    callback export-json();
+    callback export-ics();
+    callback import-json();
 
     // 界面本地状态
     property <string> quick-text: "";
@@ -2926,7 +2935,7 @@ export component MainWindow inherits Window {
                         padding: 20px;
                         spacing: 10px;
                         Text {
-                            text: "选择提示音";
+                            text: root.browser-title;
                             font-size: 15px;
                             font-weight: 600;
                             color: Theme.text;
@@ -2973,7 +2982,7 @@ export component MainWindow inherits Window {
                                 overflow: elide;
                                 vertical-alignment: center;
                             }
-                            Btn {
+                            if root.browser-pick-sound : Btn {
                                 btn-height: 32px;
                                 pad-x: 16px;
                                 label: "默认铃声";
@@ -2989,7 +2998,7 @@ export component MainWindow inherits Window {
                                 primary: true;
                                 btn-height: 32px;
                                 pad-x: 16px;
-                                label: "使用此文件";
+                                label: root.browser-action;
                                 clicked => { root.browse-use(); }
                             }
                         }
@@ -3288,6 +3297,36 @@ export component MainWindow inherits Window {
                                     vertical-alignment: bottom;
                                 }
                             }
+
+                            Text { text: "导入与导出"; font-size: 12px; font-weight: 600; color: Theme.text3; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Btn {
+                                    label: "导出 JSON";
+                                    pad-x: 10px;
+                                    font-size: 12px;
+                                    clicked => { root.export-json(); }
+                                }
+                                Btn {
+                                    label: "导入";
+                                    pad-x: 10px;
+                                    font-size: 12px;
+                                    clicked => { root.import-json(); }
+                                }
+                            }
+                            Btn {
+                                label: "导出日历 .ics";
+                                pad-x: 10px;
+                                font-size: 12px;
+                                clicked => { root.export-ics(); }
+                            }
+                            if root.transfer-status != "" : Text {
+                                text: root.transfer-status;
+                                font-size: 12px;
+                                color: Theme.text3;
+                                wrap: word-wrap;
+                            }
+                            Rectangle { height: 1px; background: Theme.line; }
 
                             Text { text: "更新"; font-size: 12px; font-weight: 600; color: Theme.text3; }
                             Text { text: root.version-text; font-size: 12px; color: Theme.text2; }

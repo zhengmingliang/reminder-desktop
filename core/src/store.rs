@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -114,6 +115,41 @@ impl Store {
         };
         item.acknowledged_at_ms = Some(now_ms);
         self.write_all()
+    }
+
+    /// 合并导入：id 已经存在的跳过（不动本机已有数据），回收站里的条目不带进来。
+    /// 返回 (新增条数, 跳过条数)。
+    pub fn merge_import(
+        &mut self,
+        incoming: Vec<Reminder>,
+        now_ms: i64,
+    ) -> Result<(usize, usize), String> {
+        self.ensure_writable()?;
+        let existing: HashSet<String> =
+            self.reminders.iter().map(|item| item.id.clone()).collect();
+        let mut added = 0usize;
+        let mut skipped = 0usize;
+        for mut item in incoming {
+            if item.is_deleted() || existing.contains(&item.id) {
+                skipped += 1;
+                continue;
+            }
+            // 循环提醒从导入时刻往后排，不把导出之前的周期补报出来；
+            // 稍后 / 跳过 / 提前的记录属于原来那台机器，一律清掉。
+            if matches!(item.schedule, Schedule::Cron { .. }) {
+                item.last_occurrence_ms = Some(now_ms);
+            }
+            item.skip_occurrence_ms = None;
+            item.snooze_until_ms = None;
+            item.early_notice_sent_ms = None;
+            item.updated_at_ms = now_ms;
+            self.reminders.push(item);
+            added += 1;
+        }
+        if added > 0 {
+            self.write_all()?;
+        }
+        Ok((added, skipped))
     }
 
     /// 彻底删除：从文件里真正移除，不可恢复。
@@ -634,6 +670,37 @@ mod tests {
 
     /// 回收站闭环：软删 → 恢复（Cron 不补报）→ 彻底删除 → 过期清理 → 清空。
     #[test]
+    /// 合并导入：新 id 进来，已有 id 原样保留，回收站里的不带。
+    #[test]
+    fn merge_import_adds_new_and_skips_known_or_deleted() {
+        let path = temp_path("import");
+        let mut store = Store::open(path);
+        let existing = one();
+        let existing_id = existing.id.clone();
+        store.upsert(existing).unwrap();
+
+        let mut fresh = one();
+        fresh.title = "导入的新提醒".into();
+        let mut trashed = one();
+        trashed.deleted_at_ms = Some(1);
+        let mut duplicate = one();
+        duplicate.id = existing_id.clone();
+        duplicate.title = "想覆盖的".into();
+
+        let now = 1_800_000_000_000i64;
+        let (added, skipped) = store
+            .merge_import(vec![fresh, trashed, duplicate], now)
+            .unwrap();
+        assert_eq!((added, skipped), (1, 2));
+        assert_eq!(store.active_count(), 2);
+        let kept = store
+            .reminders
+            .iter()
+            .find(|item| item.id == existing_id)
+            .expect("原来的那条还在");
+        assert_ne!(kept.title, "想覆盖的", "同 id 不该覆盖已有数据");
+    }
+
     /// 点过「知道了」的确认时间要落盘，重开程序还在；条目不存在时静默返回。
     #[test]
     fn acknowledge_persists_and_survives_reload() {

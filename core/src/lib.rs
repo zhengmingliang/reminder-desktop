@@ -7,6 +7,7 @@ pub mod model;
 pub mod schedule;
 pub mod settings;
 pub mod store;
+pub mod transfer;
 pub mod update;
 pub mod validate;
 
@@ -21,6 +22,7 @@ pub use schedule::{
     ListText, RecordEntry, SkippedHit, TimelineEntry,
 };
 pub use store::{default_data_dir, Store};
+pub use transfer::{from_json, to_ics, to_json};
 pub use settings::{
     clamp_trash_keep_days, in_quiet_hours, load_settings, save_settings, settings_path, valid_hhmm,
     DndMode, Settings, SortMode, ThemeMode, DEFAULT_TRASH_KEEP_DAYS,

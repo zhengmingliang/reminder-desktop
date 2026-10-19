@@ -33,6 +33,13 @@ enum Nav {
     Select(String),
 }
 
+/// 文件浏览器的用途：选铃声，或选要导入的 JSON 文件。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BrowserMode {
+    Sound,
+    Import,
+}
+
 /// 后台更新线程回传的消息。
 enum UpdateMsg {
     /// 检查完成：已确认是新版则带上清单。
@@ -64,6 +71,8 @@ struct Session {
     log: Arc<Logger>,
     data_dir: PathBuf,
     browser_dir: RefCell<PathBuf>,
+    /// 文件浏览器当前是选铃声还是选导入文件。
+    browser_mode: Cell<BrowserMode>,
     selected: RefCell<Option<String>>,
     loaded: RefCell<Option<Reminder>>,
     baseline: RefCell<Draft>,
@@ -202,6 +211,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
         log: log.clone(),
         data_dir: data_dir.clone(),
         browser_dir: RefCell::new(home_dir()),
+        browser_mode: Cell::new(BrowserMode::Sound),
         selected: RefCell::new(None),
         loaded: RefCell::new(None),
         baseline: RefCell::new(Draft::blank()),
@@ -587,6 +597,18 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {
     ui.on_dismiss_missed({
         let session = session.clone();
         move || session.clear_missed()
+    });
+    ui.on_export_json({
+        let session = session.clone();
+        move || session.export_json()
+    });
+    ui.on_export_ics({
+        let session = session.clone();
+        move || session.export_ics()
+    });
+    ui.on_import_json({
+        let session = session.clone();
+        move || session.open_import_browser()
     });
     ui.on_open_data_dir({
         let session = session.clone();
@@ -2058,6 +2080,120 @@ impl Session {
         }
     }
 
+    /// 导出全部提醒为 JSON，落在数据目录的 export/ 下，然后打开目录让用户自己拿走。
+    fn export_json(&self) {
+        let result = {
+            let store = lock_store(&self.store);
+            reminder_core::to_json(&store.reminders, Local::now())
+        }
+        .and_then(|text| self.write_export("json", &text));
+        self.finish_export(result, "JSON");
+    }
+
+    /// 导出为 .ics，供系统日历导入。只导出还会响的条目。
+    fn export_ics(&self) {
+        let result = {
+            let store = lock_store(&self.store);
+            Ok(reminder_core::to_ics(&store.reminders, Local::now()))
+        }
+        .and_then(|text| self.write_export("ics", &text));
+        self.finish_export(result, "日历文件");
+    }
+
+    fn finish_export(&self, result: Result<PathBuf, String>, what: &str) {
+        match result {
+            Ok(path) => {
+                self.log.log("INFO", &format!("导出{what}：{}", path.display()));
+                // 打开目录方便用户把文件拖走；打不开也不算失败，路径已经写在提示里。
+                if let Some(dir) = path.parent() {
+                    let _ = crate::update::open_in_file_manager(dir);
+                }
+                self.set_transfer_status(format!("{what}已导出：{}", path.display()));
+                self.toast(&format!("{what}已导出到 {}", path.display()));
+            }
+            Err(error) => {
+                self.log.log("ERROR", &format!("导出{what}失败：{error}"));
+                self.set_transfer_status(error.clone());
+                self.toast(&error);
+            }
+        }
+    }
+
+    /// 导出文件统一放在数据目录的 export/ 下，文件名带时间戳，不覆盖上一次的。
+    fn write_export(&self, extension: &str, content: &str) -> Result<PathBuf, String> {
+        let dir = self.data_dir.join("export");
+        fs::create_dir_all(&dir).map_err(|error| format!("无法创建导出目录：{error}"))?;
+        let name = format!("reminders-{}.{extension}", Local::now().format("%Y%m%d-%H%M%S"));
+        let path = dir.join(&name);
+        fs::write(&path, content).map_err(|error| format!("写入 {name} 失败：{error}"))?;
+        Ok(path)
+    }
+
+    /// 打开文件浏览器挑一个 JSON 文件导入。默认从 export/ 起步，没有就从家目录。
+    fn open_import_browser(&self) {
+        self.browser_mode.set(BrowserMode::Import);
+        let start = self.data_dir.join("export");
+        let start = if start.is_dir() { start } else { home_dir() };
+        *self.browser_dir.borrow_mut() = start.clone();
+        self.fill_dir(&start);
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_browser_title("选择要导入的 JSON 文件".into());
+            ui.set_browser_action("导入此文件".into());
+            ui.set_browser_pick_sound(false);
+            ui.set_browser_path(start.display().to_string().into());
+            ui.set_browser_picked("".into());
+            ui.set_browser_open(true);
+        }
+    }
+
+    /// 把选中的 JSON 合并进本机数据：id 已存在的跳过，不覆盖现有提醒。
+    fn import_from_file(&self, path: &Path) {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) => {
+                self.set_transfer_status(format!("读取文件失败：{error}"));
+                self.toast("读取文件失败，确认它是文本 JSON 文件");
+                return;
+            }
+        };
+        let incoming = match reminder_core::from_json(&text) {
+            Ok(items) => items,
+            Err(error) => {
+                self.set_transfer_status(error.clone());
+                self.toast(&error);
+                return;
+            }
+        };
+        let now_ms = Local::now().timestamp_millis();
+        match lock_store(&self.store).merge_import(incoming, now_ms) {
+            Ok((added, skipped)) => {
+                runtime::poke(&self.wake);
+                self.refresh_list();
+                self.log.log(
+                    "INFO",
+                    &format!("导入 {added} 条、跳过 {skipped} 条，来源 {}", path.display()),
+                );
+                let message = if skipped > 0 {
+                    format!("已导入 {added} 条，跳过 {skipped} 条（已存在或在回收站）")
+                } else {
+                    format!("已导入 {added} 条提醒")
+                };
+                self.set_transfer_status(message.clone());
+                self.toast(&message);
+            }
+            Err(error) => {
+                self.set_transfer_status(error.clone());
+                self.toast(&error);
+            }
+        }
+    }
+
+    fn set_transfer_status(&self, text: String) {
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_transfer_status(text.into());
+        }
+    }
+
     /// 展开就重读一次日志尾部，收起就把内容清掉。
     fn toggle_log(&self) {
         let Some(ui) = self.ui.upgrade() else {
@@ -2138,6 +2274,7 @@ impl Session {
     }
 
     fn open_browser(&self) {
+        self.browser_mode.set(BrowserMode::Sound);
         let current = self.sound_path.borrow().clone();
         let start = PathBuf::from(&current)
             .parent()
@@ -2154,6 +2291,9 @@ impl Session {
             });
             ui.set_browser_picked("".into());
             ui.set_browser_open(true);
+            ui.set_browser_title("选择提示音".into());
+            ui.set_browser_action("使用此文件".into());
+            ui.set_browser_pick_sound(true);
         }
     }
 
@@ -2182,6 +2322,11 @@ impl Session {
         let file = PathBuf::from(path.trim());
         if file.is_dir() {
             self.browse_enter(file.display().to_string(), "dir".into());
+            return;
+        }
+        if self.browser_mode.get() == BrowserMode::Import {
+            ui.set_browser_open(false);
+            self.import_from_file(&file);
             return;
         }
         if let Err(error) = check_sound_file(path.trim()) {
