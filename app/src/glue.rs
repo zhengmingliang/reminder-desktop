@@ -10,9 +10,10 @@ use chrono::{DateTime, Datelike, Local, Offset, Timelike};
 use reminder_core::update::{is_newer, Manifest};
 use reminder_core::validate::{arm_snooze, clear_skip, skip_next_occurrence};
 use reminder_core::{
-    check_sound_file, clamp_trash_keep_days, format_point, in_quiet_hours, inspect, millis_to_local,
-    load_settings, save_settings, settings_path, tag_rgb, valid_hhmm, DndMode, Draft, Kind, Reminder,
-    Report, Schedule, SortMode, Status, Store, ThemeMode, DEFAULT_TRASH_KEEP_DAYS,
+    check_sound_file, clamp_trash_keep_days, default_main, default_new, format_point,
+    in_quiet_hours, inspect, load_settings, millis_to_local, parse_hotkey, save_settings,
+    settings_path, tag_rgb, valid_hhmm, DndMode, Draft, Hotkey, Kind, Reminder, Report, Schedule,
+    SortMode, Status, Store, ThemeMode, DEFAULT_TRASH_KEEP_DAYS,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
@@ -38,6 +39,20 @@ enum Nav {
 enum BrowserMode {
     Sound,
     Import,
+}
+
+/// 两个可自定的组合键分别管什么。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HotkeySlot {
+    Main,
+    QuickNew,
+}
+
+fn slot_name(slot: HotkeySlot) -> &'static str {
+    match slot {
+        HotkeySlot::Main => "呼出主窗口",
+        HotkeySlot::QuickNew => "快速新建",
+    }
 }
 
 /// 后台更新线程回传的消息。
@@ -256,6 +271,8 @@ pub fn run(smoke: bool) -> Result<(), String> {
 
     // 全局快捷键：仅 X11。抓不到（Wayland / 被占用）就降级，不影响其它功能。
     ui.set_hotkey_on(settings.hotkey_enabled);
+    ui.set_hotkey_main_text(settings.hotkey_main.clone().into());
+    ui.set_hotkey_new_text(settings.hotkey_new.clone().into());
     session.sync_hotkey(settings.hotkey_enabled);
 
     // 勿扰时段：开关、起止时间与模式回显到设置面板。
@@ -565,6 +582,18 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {
     ui.on_hotkey_changed({
         let session = session.clone();
         move |on| session.set_hotkey(on)
+    });
+    ui.on_hotkey_main_edited({
+        let session = session.clone();
+        move |text| session.set_hotkey_binding(HotkeySlot::Main, text.to_string())
+    });
+    ui.on_hotkey_new_edited({
+        let session = session.clone();
+        move |text| session.set_hotkey_binding(HotkeySlot::QuickNew, text.to_string())
+    });
+    ui.on_hotkey_reset({
+        let session = session.clone();
+        move || session.reset_hotkeys()
     });
     ui.on_dnd_changed({
         let session = session.clone();
@@ -1718,15 +1747,29 @@ impl Session {
             ui.set_hotkey_status("已关闭".into());
             return;
         }
-        match hotkey::spawn(self.hotkey_tx.clone(), self.log.clone()) {
+        let (main, quick_new) = self.hotkeys();
+        match hotkey::spawn(self.hotkey_tx.clone(), self.log.clone(), main, quick_new) {
             Ok(handle) => {
                 *self.hotkey.borrow_mut() = Some(handle);
-                ui.set_hotkey_status("已启用：Ctrl+Alt+R 呼出主窗口，Ctrl+Alt+N 快速新建".into());
+                ui.set_hotkey_status(
+                    format!("已启用：{} 呼出主窗口，{} 快速新建", main.text(), quick_new.text())
+                        .into(),
+                );
             }
             Err(message) => {
                 ui.set_hotkey_status(format!("启用失败：{message}").into());
             }
         }
+    }
+
+    /// 当前生效的两个组合键。设置里的文本解析不出来就退回默认，不让坏配置把快捷键废掉。
+    fn hotkeys(&self) -> (Hotkey, Hotkey) {
+        let path = settings_path(&self.data_dir);
+        let settings = load_settings(&path);
+        (
+            reminder_core::hotkey_from_text(&settings.hotkey_main, default_main()),
+            reminder_core::hotkey_from_text(&settings.hotkey_new, default_new()),
+        )
     }
 
     /// 设置页切换全局快捷键开关：立即生效并持久化到 settings.json。
@@ -1744,6 +1787,68 @@ impl Session {
         }
         self.sync_hotkey(on);
         self.log.log("INFO", &format!("全局快捷键开关={on}"));
+    }
+
+    /// 改其中一个组合键：解析得出来才落盘并重新抓键，解析不出来只在输入框下提示。
+    fn set_hotkey_binding(&self, which: HotkeySlot, text: String) {
+        let trimmed = text.trim();
+        let parsed = parse_hotkey(trimmed);
+        let Some(ui) = self.ui.upgrade() else {
+            return;
+        };
+        let error = if parsed.is_some() {
+            String::new()
+        } else {
+            "格式不对：修饰键用 Ctrl / Alt / Shift / Win，主键用字母、数字或 F1-F12，例如 Ctrl+Alt+R".to_string()
+        };
+        match which {
+            HotkeySlot::Main => ui.set_hotkey_main_error(error.into()),
+            HotkeySlot::QuickNew => ui.set_hotkey_new_error(error.into()),
+        }
+        let Some(hotkey) = parsed else {
+            return;
+        };
+        let path = settings_path(&self.data_dir);
+        let mut settings = load_settings(&path);
+        let value = hotkey.text();
+        match which {
+            HotkeySlot::Main => settings.hotkey_main = value.clone(),
+            HotkeySlot::QuickNew => settings.hotkey_new = value.clone(),
+        }
+        if let Err(error) = save_settings(&path, &settings) {
+            self.log.log("ERROR", &format!("快捷键设置保存失败：{error}"));
+            self.toast("快捷键设置未能保存");
+            return;
+        }
+        // 回显统一成解析后的标准写法（大小写、空格都可能被用户写得不一样）。
+        let (main, quick_new) = self.hotkeys();
+        ui.set_hotkey_main_text(main.text().into());
+        ui.set_hotkey_new_text(quick_new.text().into());
+        self.log.log("INFO", &format!("组合键改为 {} = {value}", slot_name(which)));
+        if ui.get_hotkey_on() {
+            self.sync_hotkey(true);
+        }
+    }
+
+    /// 恢复默认组合键：Ctrl+Alt+R / Ctrl+Alt+N。
+    fn reset_hotkeys(&self) {
+        let path = settings_path(&self.data_dir);
+        let mut settings = load_settings(&path);
+        settings.hotkey_main = default_main().text();
+        settings.hotkey_new = default_new().text();
+        if let Err(error) = save_settings(&path, &settings) {
+            self.log.log("ERROR", &format!("快捷键设置保存失败：{error}"));
+            self.toast("快捷键设置未能保存");
+            return;
+        }
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_hotkey_main_text(default_main().text().into());
+            ui.set_hotkey_new_text(default_new().text().into());
+            ui.set_hotkey_main_error("".into());
+            ui.set_hotkey_new_error("".into());
+        }
+        self.sync_hotkey(true);
+        self.toast("已恢复默认组合键");
     }
 
     /// 勿扰开关：时段内到期的提醒按所选模式（静音弹窗 / 只记录）处理。

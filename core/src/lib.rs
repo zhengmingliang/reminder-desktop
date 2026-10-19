@@ -3,6 +3,7 @@
 
 pub mod audio;
 pub mod cli;
+pub mod hotkey;
 pub mod model;
 pub mod schedule;
 pub mod settings;
@@ -12,6 +13,7 @@ pub mod update;
 pub mod validate;
 
 pub use audio::{check_sound_file, decode_bytes, read_sound, AudioSource, DEFAULT_CHIME};
+pub use hotkey::{default_main, default_new, from_text as hotkey_from_text, parse_hotkey, Hotkey};
 pub use model::{
     millis_to_local, tag_color, tag_rgb, Draft, Kind, Reminder, Schedule, Status, TAG_COLORS,
     TAG_MAX,

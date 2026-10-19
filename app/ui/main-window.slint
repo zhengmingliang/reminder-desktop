@@ -663,6 +663,11 @@ export component MainWindow inherits Window {
     // 全局快捷键开关与状态文案（仅 X11 会话能真正抓到键）。
     in-out property <bool> hotkey-on: true;
     in-out property <string> hotkey-status: "";
+    // 两个可自定的组合键：当前文本与格式错误提示。
+    in-out property <string> hotkey-main-text: "Ctrl+Alt+R";
+    in-out property <string> hotkey-new-text: "Ctrl+Alt+N";
+    in-out property <string> hotkey-main-error: "";
+    in-out property <string> hotkey-new-error: "";
     // 勿扰时段：开关、起止时间（HH:MM）、模式（0 静音弹窗 / 1 只记录）与状态文案。
     in-out property <bool> dnd-on: false;
     in-out property <string> dnd-start: "22:00";
@@ -722,6 +727,9 @@ export component MainWindow inherits Window {
     callback theme-changed(int);
     callback repeat-changed(int);
     callback hotkey-changed(bool);
+    callback hotkey-main-edited(string);
+    callback hotkey-new-edited(string);
+    callback hotkey-reset();
     callback dnd-changed(bool);
     callback dnd-start-edited(string);
     callback dnd-end-edited(string);
@@ -3119,6 +3127,66 @@ export component MainWindow inherits Window {
                                 }
                             }
                             Text { text: root.hotkey-status; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
+                            if root.hotkey-on : VerticalLayout {
+                                spacing: 6px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "呼出主窗口";
+                                        font-size: 12px;
+                                        color: Theme.text2;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Field {
+                                        width: 110px;
+                                        field-height: 28px;
+                                        font-size: 12px;
+                                        mono: true;
+                                        mono-family: root.mono-font;
+                                        placeholder: "Ctrl+Alt+R";
+                                        text <=> root.hotkey-main-text;
+                                        invalid: root.hotkey-main-error != "";
+                                        edited(t) => { root.hotkey-main-edited(t); }
+                                    }
+                                }
+                                if root.hotkey-main-error != "" : ErrorText {
+                                    text: root.hotkey-main-error;
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "快速新建";
+                                        font-size: 12px;
+                                        color: Theme.text2;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Field {
+                                        width: 110px;
+                                        field-height: 28px;
+                                        font-size: 12px;
+                                        mono: true;
+                                        mono-family: root.mono-font;
+                                        placeholder: "Ctrl+Alt+N";
+                                        text <=> root.hotkey-new-text;
+                                        invalid: root.hotkey-new-error != "";
+                                        edited(t) => { root.hotkey-new-edited(t); }
+                                    }
+                                }
+                                if root.hotkey-new-error != "" : ErrorText {
+                                    text: root.hotkey-new-error;
+                                }
+                                HorizontalLayout {
+                                    alignment: end;
+                                    Btn {
+                                        label: "恢复默认";
+                                        pad-x: 10px;
+                                        font-size: 12px;
+                                        clicked => { root.hotkey-reset(); }
+                                    }
+                                }
+                            }
                             Rectangle { height: 1px; background: Theme.line; }
 
                             HorizontalLayout {

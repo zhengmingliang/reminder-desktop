@@ -52,6 +52,14 @@ fn default_hotkey_enabled() -> bool {
     true
 }
 
+fn default_hotkey_main() -> String {
+    crate::hotkey::default_main().text()
+}
+
+fn default_hotkey_new() -> String {
+    crate::hotkey::default_new().text()
+}
+
 fn default_dnd_start() -> String {
     "22:00".into()
 }
@@ -198,9 +206,15 @@ pub struct Settings {
     /// 弹窗一直没被处理时，每隔多少分钟再响一次；0 表示不再响。
     #[serde(default = "default_repeat_minutes")]
     pub repeat_minutes: u32,
-    /// 是否注册全局快捷键（Ctrl+Alt+R 呼出主窗口，Ctrl+Alt+N 快速新建）。仅 X11 会话生效。
+    /// 是否注册全局快捷键。仅 X11 会话生效。
     #[serde(default = "default_hotkey_enabled")]
     pub hotkey_enabled: bool,
+    /// 呼出/隐藏主窗口的组合键文本，如 "Ctrl+Alt+R"。解析不出来时退回默认值。
+    #[serde(default = "default_hotkey_main")]
+    pub hotkey_main: String,
+    /// 快速新建的组合键文本，如 "Ctrl+Alt+N"。
+    #[serde(default = "default_hotkey_new")]
+    pub hotkey_new: String,
     /// 勿扰时段开关：时段内到期的提醒按 dnd_mode 处理。
     #[serde(default)]
     pub dnd_enabled: bool,
@@ -231,6 +245,8 @@ impl Default for Settings {
             update_url: String::new(),
             repeat_minutes: DEFAULT_REPEAT_MINUTES,
             hotkey_enabled: true,
+            hotkey_main: default_hotkey_main(),
+            hotkey_new: default_hotkey_new(),
             dnd_enabled: false,
             dnd_start: default_dnd_start(),
             dnd_end: default_dnd_end(),
@@ -291,6 +307,8 @@ mod tests {
         assert_eq!(loaded.repeat_minutes, DEFAULT_REPEAT_MINUTES);
         assert_eq!(loaded.sort_mode, SortMode::Status, "老设置里没有排列方式，应按状态分组");
         assert!(loaded.hotkey_enabled, "老设置里没有快捷键开关，应默认开启");
+        assert_eq!(loaded.hotkey_main, "Ctrl+Alt+R", "老设置里没有组合键，应回到默认");
+        assert_eq!(loaded.hotkey_new, "Ctrl+Alt+N");
         assert!(!loaded.dnd_enabled, "老设置里没有勿扰配置，应默认关闭");
         assert_eq!(loaded.dnd_start, "22:00");
         assert_eq!(loaded.dnd_end, "07:00");
@@ -313,6 +331,8 @@ mod tests {
                 update_url: "https://example.com/latest.json".into(),
                 repeat_minutes: 0,
                 hotkey_enabled: false,
+                hotkey_main: "Ctrl+Alt+M".into(),
+                hotkey_new: "Ctrl+Shift+N".into(),
                 dnd_enabled: true,
                 dnd_start: "23:30".into(),
                 dnd_end: "06:45".into(),
@@ -329,6 +349,8 @@ mod tests {
         // 关掉（0）也要如实存回来，不能被默认值顶掉。
         assert_eq!(loaded.repeat_minutes, 0);
         assert!(!loaded.hotkey_enabled);
+        assert_eq!(loaded.hotkey_main, "Ctrl+Alt+M");
+        assert_eq!(loaded.hotkey_new, "Ctrl+Shift+N");
         assert!(loaded.dnd_enabled);
         assert_eq!(loaded.dnd_start, "23:30");
         assert_eq!(loaded.dnd_end, "06:45");
