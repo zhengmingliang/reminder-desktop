@@ -658,6 +658,8 @@ export component MainWindow inherits Window {
     in-out property <string> version-text: "";
     in-out property <string> update-text: "";
     in-out property <bool> update-ready: false;
+    // 更新包已下载并通过校验，可以点「安装并重启」替换当前程序。
+    in-out property <bool> install-ready: false;
     // 弹窗一直没处理时的再响间隔（分钟），0 = 不再响；默认 5。
     in-out property <int> repeat-minutes: 5;
     // 全局快捷键开关与状态文案（仅 X11 会话能真正抓到键）。
@@ -757,6 +759,7 @@ export component MainWindow inherits Window {
     callback restore-backup(int);
     callback check-update();
     callback download-update();
+    callback install-update();
     callback review-missed();
     callback dismiss-missed();
     callback open-data-dir();
@@ -3414,6 +3417,22 @@ export component MainWindow inherits Window {
                                     font-size: 12px;
                                     clicked => { root.download-update(); }
                                 }
+                            }
+                            if root.install-ready : HorizontalLayout {
+                                spacing: 8px;
+                                Btn {
+                                    label: "安装并重启";
+                                    primary: true;
+                                    pad-x: 10px;
+                                    font-size: 12px;
+                                    clicked => { root.install-update(); }
+                                }
+                            }
+                            if root.install-ready : Text {
+                                text: "替换前会把当前程序另存为 .old，装完即可用新版本；装不动可手动换回来";
+                                font-size: 12px;
+                                color: Theme.text3;
+                                wrap: word-wrap;
                             }
 
                             Rectangle { height: 1px; background: Theme.line; }

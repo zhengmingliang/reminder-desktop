@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Local, Offset, Timelike};
@@ -114,6 +115,10 @@ struct Session {
     close_to_tray: Cell<bool>,
     /// 已确认的新版本清单，等用户点「下载更新」。
     pending_update: RefCell<Option<Manifest>>,
+    /// 已下载、等用户点「安装并重启」的更新包路径。
+    pending_archive: RefCell<Option<PathBuf>>,
+    /// 已下载的新版本号，安装提示里要用。
+    update_version: RefCell<String>,
     /// 全局快捷键抓键线程；None 表示关闭或启用失败。
     hotkey: RefCell<Option<hotkey::HotkeyHandle>>,
     /// 给抓键线程发命令的通道（线程 clone 一份往里塞命令）。
@@ -143,13 +148,31 @@ struct Session {
     tag_filter: RefCell<Option<String>>,
 }
 
-pub fn run(smoke: bool) -> Result<(), String> {
+/// 拿实例锁。after_update 时旧进程还在退出，锁可能要过一会儿才释放，先重试几轮。
+fn claim_instance(dir: &Path, after_update: bool) -> Result<Launch, String> {
+    if !after_update {
+        return instance::claim(dir);
+    }
+    for _ in 0..20 {
+        if let Some(lock) = instance::try_primary(dir)? {
+            return Ok(Launch::Primary(lock));
+        }
+        thread::sleep(Duration::from_millis(150));
+    }
+    // 等了 3 秒还是拿不到，说明真有别的实例在跑，按老规矩请求它显示主窗口。
+    let _ = fs::write(dir.join("show.request"), b"1\n");
+    Ok(Launch::Secondary)
+}
+
+/// after_update：这次是被替换前的旧进程拉起来的。旧进程此刻还没退出、还占着实例锁，
+/// 所以要多等一会儿再判断「是不是已经有实例在跑」，否则新进程会把自己当成第二个实例退出。
+pub fn run(smoke: bool, after_update: bool) -> Result<(), String> {
     let data_dir = reminder_core::default_data_dir();
     fs::create_dir_all(&data_dir).map_err(|error| format!("无法创建数据目录：{error}"))?;
     let log = Arc::new(Logger::open(data_dir.join("app.log")));
     log.log("INFO", "启动");
 
-    let lock = match instance::claim(&data_dir)? {
+    let lock = match claim_instance(&data_dir, after_update)? {
         Launch::Secondary => {
             println!("桌面提醒已在运行，已请求打开主窗口");
             log.log("INFO", "已有实例在运行，本次退出");
@@ -248,6 +271,8 @@ pub fn run(smoke: bool) -> Result<(), String> {
         dnd_mode: Cell::new(settings.dnd_mode),
         close_to_tray: Cell::new(settings.close_to_tray),
         pending_update: RefCell::new(None),
+        pending_archive: RefCell::new(None),
+        update_version: RefCell::new(String::new()),
         hotkey: RefCell::new(None),
         hotkey_tx,
         update_rx: RefCell::new(update_rx),
@@ -618,6 +643,10 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {
     ui.on_download_update({
         let session = session.clone();
         move || session.download_update()
+    });
+    ui.on_install_update({
+        let session = session.clone();
+        move || session.install_update()
     });
     ui.on_review_missed({
         let session = session.clone();
@@ -2013,6 +2042,34 @@ impl Session {
         });
     }
 
+    /// 「安装并重启」：解出包里的新程序，替换当前程序，拉起新进程后自己退出。
+    /// 走到 replace_and_restart 就不会返回了（它内部直接 exit）。
+    fn install_update(&self) {
+        let Some(archive) = self.pending_archive.borrow().clone() else {
+            self.toast("没有可安装的更新包，请先下载");
+            return;
+        };
+        let unpack_dir = self.data_dir.join("updates").join("unpacked");
+        // 每次都从干净目录开始，避免上一版残留的文件被当成新程序。
+        let _ = fs::remove_dir_all(&unpack_dir);
+        let binary = match crate::update::unpack_binary(&archive, &unpack_dir) {
+            Ok(path) => path,
+            Err(error) => {
+                self.log.log("ERROR", &format!("解包失败：{error}"));
+                self.toast(&format!("更新包解不开：{error}"));
+                return;
+            }
+        };
+        self.log.log(
+            "INFO",
+            &format!("准备安装 v{}：{}", self.update_version.borrow(), binary.display()),
+        );
+        if let Err(error) = crate::update::replace_and_restart(&binary) {
+            self.log.log("ERROR", &format!("安装更新失败：{error}"));
+            self.toast(&format!("安装失败：{error}"));
+        }
+    }
+
     /// 主定时器里收取后台更新任务的结果。
     fn poll_updates(&self) {
         let batch: Vec<UpdateMsg> = self.update_rx.borrow_mut().try_iter().collect();
@@ -2037,6 +2094,7 @@ impl Session {
                             ui.set_update_text(text.clone().into());
                             ui.set_update_ready(true);
                         }
+                        *self.update_version.borrow_mut() = manifest.version.clone();
                         *self.pending_update.borrow_mut() = Some(manifest);
                         self.toast(&text);
                     }
@@ -2064,13 +2122,14 @@ impl Session {
                 self.update_busy.set(false);
                 match result {
                     Ok(path) => {
+                        *self.pending_archive.borrow_mut() = Some(path.clone());
                         if let Some(ui) = self.ui.upgrade() {
-                            ui.set_update_text(format!("更新包已下载：{}", path.display()).into());
+                            ui.set_update_text(
+                                format!("v{} 已下载，点「安装并重启」替换当前程序", self.update_version.borrow()).into(),
+                            );
+                            ui.set_install_ready(true);
                         }
-                        self.toast(&format!(
-                            "更新包已下载到 {}，替换后重启即可生效",
-                            path.display()
-                        ));
+                        self.toast(&format!("更新包已下载：{}", path.display()));
                     }
                     Err(error) => {
                         self.log.log("WARN", &format!("下载更新失败：{error}"));
