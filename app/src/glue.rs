@@ -832,10 +832,21 @@ impl Session {
     fn set_autostart(&self, on: bool) {
         match crate::autostart::set_enabled(on) {
             Ok(()) => {
+                // 回读真实状态：写文件/改注册表可能「成功」但没生效，别给用户一个假开关。
+                let actual = crate::autostart::is_enabled();
                 if let Some(ui) = self.ui.upgrade() {
-                    ui.set_autostart_on(on);
+                    ui.set_autostart_on(actual);
                 }
-                self.toast(if on { "已开启开机自启动" } else { "已关闭开机自启动" });
+                if actual == on {
+                    self.toast(if on { "已开启开机自启动" } else { "已关闭开机自启动" });
+                } else {
+                    self.log.log("WARN", "开机自启动状态与预期不一致");
+                    self.toast(if on {
+                        "开机自启动未能生效，请检查自启动目录的权限"
+                    } else {
+                        "开机自启动文件未能删除，请手动检查"
+                    });
+                }
             }
             Err(error) => {
                 self.log.log("ERROR", &format!("开机自启动设置失败：{error}"));
@@ -1554,6 +1565,12 @@ impl Session {
 
     fn reveal_main(&self) {
         if let Some(ui) = self.ui.upgrade() {
+            // 最小化时 `show()` 不会把它恢复出来，先取消最小化再聚焦。
+            let _ = with_winit(ui.window(), |winit_window| {
+                if winit_window.is_minimized() == Some(true) {
+                    winit_window.set_minimized(false);
+                }
+            });
             let _ = ui.show();
             focus_window(ui.window());
             self.refresh_list();
