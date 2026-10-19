@@ -522,6 +522,9 @@ export component MainWindow inherits Window {
     in-out property <string> sound-label: "";
     in-out property <string> sound-error: "";
     in-out property <bool> delete-enabled: false;
+    // 「跳过下一次」按钮：仅编辑已保存的循环提醒时可见；文案由 Rust 侧算好（含跳过点或取消）。
+    in-out property <bool> skip-visible: false;
+    in-out property <string> skip-label: "跳过下一次";
     in-out property <bool> browser-open: false;
     in-out property <string> browser-path: "";
     in-out property <string> browser-picked: "";
@@ -556,6 +559,7 @@ export component MainWindow inherits Window {
     callback save();
     callback revert();
     callback delete-request();
+    callback skip-next();
     callback backup();
     callback preview-popup();
     callback preview-sound();
@@ -2349,6 +2353,13 @@ export component MainWindow inherits Window {
                                         pad-x: 12px;
                                         label: "预览弹窗";
                                         clicked => { root.preview-popup(); }
+                                    }
+                                    if root.skip-visible : Btn {
+                                        transparent: true;
+                                        btn-height: 34px;
+                                        pad-x: 12px;
+                                        label: root.skip-label;
+                                        clicked => { root.skip-next(); }
                                     }
 
                                     Rectangle { horizontal-stretch: 1; }

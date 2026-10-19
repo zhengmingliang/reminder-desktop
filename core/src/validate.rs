@@ -166,6 +166,11 @@ pub fn build_reminder(
         Some(item) if item.schedule == schedule => item.occurrence_count,
         _ => 0,
     };
+    // 跳过点只在计划没变时保留；计划改了，原来记的那个点对新计划没有意义。
+    let skip_occurrence_ms = match previous {
+        Some(item) if item.schedule == schedule => item.skip_occurrence_ms,
+        _ => None,
+    };
     Ok(Reminder {
         id: previous
             .map(|item| item.id.clone())
@@ -190,12 +195,32 @@ pub fn build_reminder(
         early_minutes: u32::try_from(draft.early_minutes.max(0)).unwrap_or(0),
         early_notice_sent_ms: None,
         occurrence_count,
+        skip_occurrence_ms,
     })
 }
 
 /// 记录某个触发点已经发过提前提醒，避免同一个点反复弹。
 pub fn mark_early_sent(reminder: &mut Reminder, occurrence_ms: i64, now: DateTime<Local>) {
     reminder.early_notice_sent_ms = Some(occurrence_ms);
+    reminder.updated_at_ms = now_ms(now);
+}
+
+/// 用户要求跳过下一次触发。返回被跳过的触发点毫秒数。
+pub fn skip_next_occurrence(reminder: &mut Reminder, now: DateTime<Local>) -> Result<i64, String> {
+    if !matches!(reminder.schedule, Schedule::Cron { .. }) {
+        return Err("只有重复的提醒可以跳过".into());
+    }
+    let Some(next_ms) = crate::schedule::next_occurrence_ms(reminder) else {
+        return Err("这条提醒接下来没有触发点，不用跳过".into());
+    };
+    reminder.skip_occurrence_ms = Some(next_ms);
+    reminder.updated_at_ms = now_ms(now);
+    Ok(next_ms)
+}
+
+/// 取消之前设置的跳过。
+pub fn clear_skip(reminder: &mut Reminder, now: DateTime<Local>) {
+    reminder.skip_occurrence_ms = None;
     reminder.updated_at_ms = now_ms(now);
 }
 
@@ -222,6 +247,7 @@ pub fn set_enabled(reminder: &mut Reminder, enabled: bool, now: DateTime<Local>)
         Schedule::Cron { .. } => {
             reminder.status = Status::Recurring;
             reminder.last_occurrence_ms = Some(now_ms(now));
+            reminder.skip_occurrence_ms = None;
         }
     }
     reminder.enabled = true;
@@ -267,6 +293,10 @@ pub fn apply_fire(reminder: &mut Reminder, occurrence_ms: i64, now: DateTime<Loc
     reminder.last_fired_at_ms = Some(now_ms(now));
     reminder.last_occurrence_ms = Some(occurrence_ms);
     reminder.updated_at_ms = now_ms(now);
+    // 已经触发过的点早于跳过点，说明跳过点已过时，清掉。
+    if reminder.skip_occurrence_ms.is_some_and(|ms| ms <= occurrence_ms) {
+        reminder.skip_occurrence_ms = None;
+    }
     match reminder.schedule {
         Schedule::Cron { .. } => {
             reminder.occurrence_count = reminder.occurrence_count.saturating_add(1);
@@ -278,6 +308,13 @@ pub fn apply_fire(reminder: &mut Reminder, occurrence_ms: i64, now: DateTime<Loc
             reminder.enabled = false;
         }
     }
+}
+
+/// 静默跳过一次触发：只推进计划，不发提醒，也不计触发次数。
+pub fn apply_skip(reminder: &mut Reminder, occurrence_ms: i64, now: DateTime<Local>) {
+    reminder.last_occurrence_ms = Some(occurrence_ms);
+    reminder.skip_occurrence_ms = None;
+    reminder.updated_at_ms = now_ms(now);
 }
 
 fn err(field: &'static str, message: impl Into<String>) -> FieldError {

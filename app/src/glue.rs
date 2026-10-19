@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Local, Offset, Timelike};
 use reminder_core::update::{is_newer, Manifest};
-use reminder_core::validate::arm_snooze;
+use reminder_core::validate::{arm_snooze, clear_skip, skip_next_occurrence};
 use reminder_core::{
     check_sound_file, format_point, inspect, millis_to_local, load_settings, save_settings,
-    settings_path, Draft, Kind, Reminder, Report, Status, Store, ThemeMode,
+    settings_path, Draft, Kind, Reminder, Report, Schedule, Status, Store, ThemeMode,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
@@ -354,6 +354,10 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_re
         let session = session.clone();
         move || session.ask_delete()
     });
+    ui.on_skip_next({
+        let session = session.clone();
+        move || session.skip_next()
+    });
     ui.on_dialog_confirm({
         let session = session.clone();
         move || session.confirm_dialog()
@@ -624,7 +628,72 @@ impl Session {
             "新建提醒"
         }.into());
         self.applying.set(false);
+        self.sync_skip_ui();
         self.refresh_validation();
+    }
+
+    /// 「跳过下一次」按钮只在编辑已保存的、启用中的循环提醒时出现。
+    fn sync_skip_ui(&self) {
+        let Some(ui) = self.ui.upgrade() else {
+            return;
+        };
+        let loaded = self.loaded.borrow();
+        let Some(reminder) = loaded.as_ref() else {
+            ui.set_skip_visible(false);
+            return;
+        };
+        let recurring = matches!(reminder.schedule, Schedule::Cron { .. })
+            && reminder.enabled
+            && reminder.status != Status::Fired;
+        if !recurring {
+            ui.set_skip_visible(false);
+            return;
+        }
+        ui.set_skip_visible(true);
+        let label = match reminder.skip_occurrence_ms {
+            Some(ms) => format!("取消跳过（{}）", millis_to_local(ms).format("%m-%d %H:%M")),
+            None => "跳过下一次".to_string(),
+        };
+        ui.set_skip_label(label.into());
+    }
+
+    /// 跳过下一次触发；已设置跳过时再点则取消跳过。
+    fn skip_next(&self) {
+        let Some(id) = self.loaded.borrow().as_ref().map(|item| item.id.clone()) else {
+            return;
+        };
+        let now = Local::now();
+        let mut store = lock_store(&self.store);
+        let Some(index) = store.reminders.iter().position(|item| item.id == id) else {
+            return;
+        };
+        let reminder = &mut store.reminders[index];
+        let message = if reminder.skip_occurrence_ms.is_some() {
+            clear_skip(reminder, now);
+            "已取消跳过".to_string()
+        } else {
+            match skip_next_occurrence(reminder, now) {
+                Ok(ms) => format!("已跳过 {} 这次", millis_to_local(ms).format("%m-%d %H:%M")),
+                Err(message) => {
+                    drop(store);
+                    self.toast(&message);
+                    return;
+                }
+            }
+        };
+        let updated = store.reminders[index].clone();
+        if let Err(error) = store.save() {
+            drop(store);
+            self.toast(&error);
+            return;
+        }
+        drop(store);
+        runtime::poke(&self.wake);
+        *self.loaded.borrow_mut() = Some(updated);
+        self.sync_skip_ui();
+        self.refresh_list();
+        self.toast(&message);
+        self.log.log("INFO", &format!("跳过切换 id={id}"));
     }
 
     fn read_draft(&self) -> Draft {

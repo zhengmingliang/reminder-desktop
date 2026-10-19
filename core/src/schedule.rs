@@ -57,6 +57,13 @@ pub struct EarlyHit {
     pub early_minutes: u32,
 }
 
+/// 一次被跳过的触发点。到点时不弹窗，只把计划推进过这一点。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkippedHit {
+    pub id: String,
+    pub occurrence_ms: i64,
+}
+
 pub fn due_reminders(reminders: &[Reminder], now: DateTime<Local>) -> Vec<DueHit> {
     let mut hits = Vec::new();
     for reminder in reminders {
@@ -89,10 +96,15 @@ fn next_cron_ms(reminder: &Reminder) -> Option<i64> {
     let Schedule::Cron { expression, .. } = &reminder.schedule else {
         return None;
     };
-    let cron = parse_cron(expression).ok()?;
     let origin_ms = reminder
         .last_occurrence_ms
         .unwrap_or(reminder.created_at_ms);
+    next_cron_after(expression, origin_ms)
+}
+
+/// 从 origin 之后找 expression 的下一次触发点。
+fn next_cron_after(expression: &str, origin_ms: i64) -> Option<i64> {
+    let cron = parse_cron(expression).ok()?;
     cron.find_next_occurrence(&millis_to_local(origin_ms), false)
         .ok()
         .map(|time| time.timestamp_millis())
@@ -110,14 +122,25 @@ pub fn next_occurrence_ms(reminder: &Reminder) -> Option<i64> {
             Some(*fire_at_ms)
         }
         Schedule::Cron {
+            expression,
             end_date_ms,
             max_occurrences,
-            ..
         } if reminder.status != Status::Fired => {
             if cron_finished(reminder, *end_date_ms, *max_occurrences) {
                 return None;
             }
-            next_cron_ms(reminder)
+            let next = next_cron_ms(reminder)?;
+            // 被跳过的一次不算「下一次」，预告它后面的那次。
+            if reminder.skip_occurrence_ms == Some(next) {
+                let after = next_cron_after(expression, next)?;
+                if let Some(end_ms) = end_date_ms {
+                    if after > *end_ms {
+                        return None;
+                    }
+                }
+                return Some(after);
+            }
+            Some(next)
         }
         _ => None,
     }
@@ -146,6 +169,34 @@ pub fn early_reminders(reminders: &[Reminder], now: DateTime<Local>) -> Vec<Earl
             occurrence_ms,
             early_minutes: reminder.early_minutes,
         });
+    }
+    hits
+}
+
+/// 到点该静默跳过的条目：把计划推进过被跳过的触发点，不弹窗。
+pub fn skipped_reminders(reminders: &[Reminder], now: DateTime<Local>) -> Vec<SkippedHit> {
+    let mut hits = Vec::new();
+    let now_ms = now_ms(now);
+    for reminder in reminders {
+        let Some(skip_ms) = reminder.skip_occurrence_ms else {
+            continue;
+        };
+        if skip_ms > now_ms || !reminder.enabled || reminder.snooze_until_ms.is_some() {
+            continue;
+        }
+        if !matches!(reminder.schedule, Schedule::Cron { .. }) || reminder.status == Status::Fired {
+            continue;
+        }
+        let origin_ms = reminder
+            .last_occurrence_ms
+            .unwrap_or(reminder.created_at_ms);
+        // 只推进还没过去的跳过点；已经被更晚触发点盖过的不用再动。
+        if skip_ms > origin_ms {
+            hits.push(SkippedHit {
+                id: reminder.id.clone(),
+                occurrence_ms: skip_ms,
+            });
+        }
     }
     hits
 }
@@ -199,6 +250,10 @@ fn due_one(reminder: &Reminder, now: DateTime<Local>) -> Option<DueHit> {
                 .unwrap_or(reminder.created_at_ms);
             let (latest, missed) = latest_cron_hit(&cron, millis_to_local(origin_ms), now)?;
             let occurrence_ms = latest.timestamp_millis();
+            // 被跳过的触发点不弹窗，由 skipped_reminders 单独推进。
+            if reminder.skip_occurrence_ms == Some(occurrence_ms) {
+                return None;
+            }
             // 结束日期之后的触发点不再弹。
             if let Some(end_ms) = end_date_ms {
                 if occurrence_ms > *end_ms {
@@ -715,6 +770,7 @@ mod tests {
             early_minutes: 0,
             early_notice_sent_ms: None,
             occurrence_count: 0,
+            skip_occurrence_ms: None,
         }
     }
 
@@ -1031,6 +1087,75 @@ mod tests {
             next_wake(std::slice::from_ref(&reminder), fire - Duration::minutes(8)),
             Some(fire - Duration::minutes(8))
         );
+    }
+
+    #[test]
+    fn skip_occurrence_is_not_due_but_gets_advanced() {
+        let origin = fixed(2026, 10, 17, 8, 0, 0);
+        let mut reminder = sample(
+            Schedule::Cron {
+                expression: "0 * * * *".into(),
+                end_date_ms: None,
+                max_occurrences: None,
+            },
+            true,
+            Status::Recurring,
+        );
+        reminder.created_at_ms = now_ms(origin);
+        reminder.last_occurrence_ms = Some(now_ms(origin));
+        // 用户跳过 9:00 这次。
+        reminder.skip_occurrence_ms = Some(now_ms(fixed(2026, 10, 17, 9, 0, 0)));
+
+        // 9:00 到了：不弹，但出现在 skipped_reminders 里。
+        let now = fixed(2026, 10, 17, 9, 0, 10);
+        assert!(due_reminders(std::slice::from_ref(&reminder), now).is_empty());
+        let skips = skipped_reminders(std::slice::from_ref(&reminder), now);
+        assert_eq!(skips.len(), 1);
+        assert_eq!(skips[0].occurrence_ms, now_ms(fixed(2026, 10, 17, 9, 0, 0)));
+
+        // 推进后 10:00 正常弹。
+        crate::validate::apply_skip(&mut reminder, skips[0].occurrence_ms, now);
+        assert_eq!(reminder.skip_occurrence_ms, None);
+        assert!(skipped_reminders(std::slice::from_ref(&reminder), now).is_empty());
+        let hits = due_reminders(std::slice::from_ref(&reminder), fixed(2026, 10, 17, 10, 0, 10));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].occurrence_ms, now_ms(fixed(2026, 10, 17, 10, 0, 0)));
+    }
+
+    #[test]
+    fn next_occurrence_hops_over_the_skipped_point() {
+        let origin = fixed(2026, 10, 17, 8, 0, 0);
+        let mut reminder = sample(
+            Schedule::Cron {
+                expression: "0 * * * *".into(),
+                end_date_ms: None,
+                max_occurrences: None,
+            },
+            true,
+            Status::Recurring,
+        );
+        reminder.created_at_ms = now_ms(origin);
+        reminder.last_occurrence_ms = Some(now_ms(origin));
+        assert_eq!(
+            next_occurrence_ms(&reminder),
+            Some(now_ms(fixed(2026, 10, 17, 9, 0, 0)))
+        );
+        // 跳过 9:00 后，预告的「下一次」变成 10:00。
+        reminder.skip_occurrence_ms = Some(now_ms(fixed(2026, 10, 17, 9, 0, 0)));
+        assert_eq!(
+            next_occurrence_ms(&reminder),
+            Some(now_ms(fixed(2026, 10, 17, 10, 0, 0)))
+        );
+        // 提前提醒也以下一次（10:00）为准，不会在 9:00 前弹。
+        reminder.early_minutes = 5;
+        let early_window = fixed(2026, 10, 17, 8, 56, 0);
+        assert!(early_reminders(std::slice::from_ref(&reminder), early_window).is_empty());
+        let hits = early_reminders(
+            std::slice::from_ref(&reminder),
+            fixed(2026, 10, 17, 9, 56, 0),
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].occurrence_ms, now_ms(fixed(2026, 10, 17, 10, 0, 0)));
     }
 
     #[test]

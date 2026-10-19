@@ -5,10 +5,10 @@ use std::thread;
 use std::time::Duration;
 
 use chrono::Local;
-use reminder_core::validate::{apply_fire, finish_snooze, mark_early_sent};
+use reminder_core::validate::{apply_fire, apply_skip, finish_snooze, mark_early_sent};
 use reminder_core::{
-    due_reminders, early_reminders, format_point, millis_to_local, next_wake, read_sound, DueHit,
-    EarlyHit, Reminder, Schedule, Store,
+    due_reminders, early_reminders, format_point, millis_to_local, next_wake, read_sound,
+    skipped_reminders, DueHit, EarlyHit, Reminder, Schedule, Store,
 };
 use rodio::{Decoder, OutputStream, Sink};
 
@@ -146,9 +146,31 @@ pub fn spawn_scheduler(
 fn dispatch_due(store: &Mutex<Store>, tx: &mpsc::Sender<Vec<Notice>>, log: &Logger) {
     let now = Local::now();
     let mut guard = store.lock().unwrap_or_else(|error| error.into_inner());
+    // 被跳过的触发点先推进，不弹窗也不计数；推进后这一轮再算该弹的。
+    let skip_hits = skipped_reminders(&guard.reminders, now);
+    let mut skipped_any = false;
+    for hit in skip_hits {
+        let Some(index) = guard.reminders.iter().position(|item| item.id == hit.id) else {
+            continue;
+        };
+        log.log(
+            "INFO",
+            &format!(
+                "跳过触发 id={} occurrence={}",
+                hit.id, hit.occurrence_ms
+            ),
+        );
+        apply_skip(&mut guard.reminders[index], hit.occurrence_ms, now);
+        skipped_any = true;
+    }
     let hits = due_reminders(&guard.reminders, now);
     let early_hits = early_reminders(&guard.reminders, now);
     if hits.is_empty() && early_hits.is_empty() {
+        if skipped_any {
+            if let Err(error) = guard.save() {
+                log.log("ERROR", &format!("跳过推进后保存失败：{error}"));
+            }
+        }
         return;
     }
     let mut notices = Vec::with_capacity(hits.len() + early_hits.len());

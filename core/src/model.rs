@@ -131,6 +131,9 @@ pub struct Reminder {
     /// Cron 已经触发的次数（用于 max_occurrences 判断）。
     #[serde(default)]
     pub occurrence_count: u32,
+    /// 要跳过的触发点（毫秒）。到点时不弹窗，只把计划推进过这一点。
+    #[serde(default)]
+    pub skip_occurrence_ms: Option<i64>,
 }
 
 impl Reminder {
@@ -224,6 +227,7 @@ mod tests {
         let reminder: Reminder = serde_json::from_value(raw).unwrap();
         assert_eq!(reminder.early_minutes, 0);
         assert_eq!(reminder.early_notice_sent_ms, None);
+        assert_eq!(reminder.skip_occurrence_ms, None);
         assert_eq!(reminder.to_draft().early_minutes, 0);
     }
 
