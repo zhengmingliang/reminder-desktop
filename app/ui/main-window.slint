@@ -231,6 +231,8 @@ component GroupHeader inherits Rectangle {
     in property <string> label;
     in property <string> count;
     in property <bool> first: false;
+    /// 该分组正处于「只看这一类」的状态，标题用主色标出。
+    in property <bool> active: false;
     callback clicked();
 
     height: root.first ? 35px : 39px;
@@ -245,7 +247,7 @@ component GroupHeader inherits Rectangle {
             text: root.label;
             font-size: 12px;
             font-weight: 600;
-            color: Theme.text3;
+            color: root.active ? Theme.pri-text : Theme.text3;
             vertical-alignment: center;
         }
         Rectangle { horizontal-stretch: 1; }
@@ -253,7 +255,7 @@ component GroupHeader inherits Rectangle {
             text: root.count;
             font-size: 12px;
             font-weight: 500;
-            color: Theme.text3;
+            color: root.active ? Theme.pri-text : Theme.text3;
             vertical-alignment: center;
         }
     }
@@ -504,6 +506,7 @@ export component MainWindow inherits Window {
     in-out property <string> form-error: "";
     in-out property <[PreviewLine]> preview-lines: [];
     in-out property <[TimelineRow]> timeline: [];
+    in-out property <string> missed-count: "0";
     in-out property <[RecordRow]> records: [];
     in-out property <string> preview-head: "";
     in-out property <string> preview-next: "";
@@ -971,11 +974,17 @@ export component MainWindow inherits Window {
                                     spacing: 0px;
                                     alignment: start;
 
-                                    if root.tab-pending != "0" && (root.list-filter == "all" || root.list-filter == "pending") : GroupHeader {
+                                    // 分组标题始终全部显示：点一下只保留该组，再点一下恢复全部，
+                                    // 否则过滤后其它分组标题一起消失，就没法回到全部了。
+                                    if root.tab-pending != "0" : GroupHeader {
                                         first: true;
                                         label: "即将触发";
                                         count: root.tab-pending;
-                                        clicked => { root.list-filter = "pending"; root.filter-changed("pending"); }
+                                        active: root.list-filter == "pending";
+                                        clicked => {
+                                            root.list-filter = root.list-filter == "pending" ? "all" : "pending";
+                                            root.filter-changed(root.list-filter);
+                                        }
                                     }
                                     for row in root.rows : ReminderItem {
                                         shown: row.badge-kind != "fired" && row.badge-kind != "paused";
@@ -987,10 +996,14 @@ export component MainWindow inherits Window {
                                         }
                                     }
 
-                                    if root.tab-fired != "0" && (root.list-filter == "all" || root.list-filter == "fired") : GroupHeader {
+                                    if root.tab-fired != "0" : GroupHeader {
                                         label: "今天已触发";
                                         count: root.tab-fired;
-                                        clicked => { root.list-filter = "fired"; root.filter-changed("fired"); }
+                                        active: root.list-filter == "fired";
+                                        clicked => {
+                                            root.list-filter = root.list-filter == "fired" ? "all" : "fired";
+                                            root.filter-changed(root.list-filter);
+                                        }
                                     }
                                     for row in root.rows : ReminderItem {
                                         shown: row.badge-kind == "fired";
@@ -1002,10 +1015,14 @@ export component MainWindow inherits Window {
                                         }
                                     }
 
-                                    if root.tab-paused != "0" && (root.list-filter == "all" || root.list-filter == "paused") : GroupHeader {
+                                    if root.tab-paused != "0" : GroupHeader {
                                         label: "已停用";
                                         count: root.tab-paused;
-                                        clicked => { root.list-filter = "paused"; root.filter-changed("paused"); }
+                                        active: root.list-filter == "paused";
+                                        clicked => {
+                                            root.list-filter = root.list-filter == "paused" ? "all" : "paused";
+                                            root.filter-changed(root.list-filter);
+                                        }
                                     }
                                     for row in root.rows : ReminderItem {
                                         shown: row.badge-kind == "paused";
@@ -1255,7 +1272,7 @@ export component MainWindow inherits Window {
                                     }
                                     StatCard {
                                         horizontal-stretch: 1;
-                                        number: "1";
+                                        number: root.missed-count;
                                         caption: "近 7 天错过";
                                         warn: true;
                                     }

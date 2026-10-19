@@ -38,6 +38,8 @@ struct PopupSlot {
 struct Session {
     ui: Weak<MainWindow>,
     tray: RefCell<Option<AppTray>>,
+    /// XEmbed 托盘线程的消息发送端：用来切换「有稍后提醒」的角标。
+    tray_icon: RefCell<Option<std::sync::mpsc::Sender<xembed_tray::TrayIconMsg>>>,
     menu: RefCell<Option<TrayMenu>>,
     store: Arc<Mutex<Store>>,
     rows: Rc<VecModel<ReminderRow>>,
@@ -89,14 +91,14 @@ pub fn run(smoke: bool) -> Result<(), String> {
     let store = Arc::new(Mutex::new(Store::open(data_dir.join("reminders.json"))));
     let ui = MainWindow::new().map_err(|error| format!("无法创建主窗口：{error}"))?;
     let (tray_tx, tray_rx) = mpsc::channel::<TrayCommand>();
-    let xembed = match xembed_tray::spawn(tray_tx) {
-        Ok(()) => {
+    let (icon_tx, xembed) = match xembed_tray::spawn(tray_tx) {
+        Ok(tx) => {
             log.log("INFO", "已注册 XEmbed 托盘图标");
-            true
+            (Some(tx), true)
         }
         Err(error) => {
             log.log("WARN", &format!("XEmbed 托盘不可用：{error}"));
-            false
+            (None, false)
         }
     };
     let slint_tray = if xembed {
@@ -126,6 +128,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
     let session = Rc::new(Session {
         ui: ui.as_weak(),
         tray: RefCell::new(slint_tray),
+        tray_icon: RefCell::new(icon_tx),
         menu: RefCell::new(None),
         store: store.clone(),
         rows,
@@ -170,14 +173,15 @@ pub fn run(smoke: bool) -> Result<(), String> {
     }
 
     // 视觉走查辅助：设置该环境变量时启动即弹出预览弹窗（不落库、不改数据）。
+    // 草稿字段在定时器里现填现弹，避免被启动期间的刷新覆盖。
     if std::env::var_os("REMINDER_PREVIEW_POPUP").is_some() {
-        if let Some(ui) = ui.as_weak().upgrade() {
-            ui.set_form_title("晚上记得打电话".into());
-            ui.set_form_body("cd reminder-desktop\ncargo test -p reminder-core\ncargo build --release -p reminder-desktop".into());
-            ui.set_form_minutes("5".into());
-        }
         let session = session.clone();
         slint::Timer::single_shot(Duration::from_millis(600), move || {
+            if let Some(ui) = session.ui.upgrade() {
+                ui.set_form_title("晚上记得打电话".into());
+                ui.set_form_body("cd reminder-desktop\ncargo test -p reminder-core\ncargo build --release -p reminder-desktop".into());
+                ui.set_form_minutes("5".into());
+            }
             session.preview_popup();
         });
     }
@@ -1042,6 +1046,8 @@ impl Session {
         drop(store);
         sync_rows(&self.rows, rows);
         ui.set_timeline(ModelRc::new(VecModel::from(timeline_rows)));
+        let missed = timeline.iter().filter(|entry| entry.kind == "missed").count();
+        ui.set_missed_count(missed.to_string().into());
         ui.set_records(ModelRc::new(VecModel::from(record_list)));
         ui.set_list_empty(visible == 0);
         ui.set_empty_text(if total == 0 {
@@ -1273,9 +1279,23 @@ impl Session {
 
     /// 托盘提示：有稍后提醒时显示下次再提醒的时间，否则显示后台运行状态。
     fn update_tip(&self) {
+        let has_snooze = self.snooze_pending();
         if let Some(tray) = self.tray.borrow().as_ref() {
             tray.set_tip(self.tip_text().into());
         }
+        if let Some(tx) = self.tray_icon.borrow().as_ref() {
+            let _ = tx.send(xembed_tray::TrayIconMsg::Badge(has_snooze));
+            let _ = tx.send(xembed_tray::TrayIconMsg::Tooltip(self.tip_text()));
+        }
+    }
+
+    fn snooze_pending(&self) -> bool {
+        let now = Local::now().timestamp_millis();
+        let store = lock_store(&self.store);
+        store
+            .reminders
+            .iter()
+            .any(|item| item.snooze_until_ms.map(|ms| ms > now).unwrap_or(false))
     }
 
     fn tip_text(&self) -> String {

@@ -3622,6 +3622,7 @@ dependencies = [
  "chrono",
  "fs2",
  "i-slint-backend-winit",
+ "image",
  "reminder-core",
  "rodio",
  "slint",

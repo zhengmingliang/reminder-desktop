@@ -8,7 +8,9 @@
 //! 这里用根窗口的视觉把铃铛画进图标，背景取屏幕底边最常见的颜色，也就是面板本身的颜色。
 //! 方块和面板融在一起，露出来的是铃铛。
 
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::OnceLock;
+use std::time::Duration;
 use std::thread;
 
 use x11rb::connection::Connection;
@@ -24,6 +26,14 @@ use x11rb::wrapper::ConnectionExt as _;
 pub enum TrayCommand {
     Show,
     Menu(TrayMenuAnchor),
+}
+
+/// 外部（界面）发给托盘线程的消息：切换「有稍后提醒」角标、更新悬浮提示。
+#[derive(Clone, Debug)]
+pub enum TrayIconMsg {
+    Badge(bool),
+    /// 更新面板悬浮提示（XEmbed 用 _NET_WM_NAME 当 tooltip）。
+    Tooltip(String),
 }
 
 /// 右键时图标在根窗口上的位置。菜单要在窗口创建前就算好，不能等窗口出现再挪。
@@ -47,19 +57,21 @@ pub struct TrayMenuAnchor {
 
 const ICON: u16 = 22;
 
-pub fn spawn(tx: Sender<TrayCommand>) -> Result<(), String> {
+/// 注册 XEmbed 托盘图标，返回向托盘线程发消息的发送端（用于更新角标）。
+pub fn spawn(tx: Sender<TrayCommand>) -> Result<Sender<TrayIconMsg>, String> {
+    let (icon_tx, icon_rx) = std::sync::mpsc::channel::<TrayIconMsg>();
     if !tray_present() {
         return Err("当前会话没有 XEmbed 系统托盘".into());
     }
     thread::Builder::new()
         .name("reminder-tray".into())
         .spawn(move || {
-            if let Err(error) = tray_loop(tx) {
+            if let Err(error) = tray_loop(tx, icon_rx) {
                 eprintln!("托盘图标退出：{error}");
             }
         })
         .map_err(|error| format!("无法启动托盘线程：{error}"))?;
-    Ok(())
+    Ok(icon_tx)
 }
 
 fn tray_present() -> bool {
@@ -81,11 +93,32 @@ fn tray_owner(conn: &RustConnection, screen: usize) -> Result<u32, String> {
     Ok(owner)
 }
 
-fn tray_loop(tx: Sender<TrayCommand>) -> Result<(), String> {
+fn tray_loop(tx: Sender<TrayCommand>, rx: Receiver<TrayIconMsg>) -> Result<(), String> {
     let (conn, screen_num) = RustConnection::connect(None).map_err(|error| error.to_string())?;
     let mut icon = dock(&conn, screen_num)?;
     loop {
-        let event = conn.wait_for_event().map_err(|error| error.to_string())?;
+        // 先处理界面发来的消息（角标开关），再看有没有 X 事件。
+        for msg in rx.try_iter() {
+            match msg {
+                TrayIconMsg::Badge(on) => {
+                    if icon.badge != on {
+                        icon.badge = on;
+                        if let Err(error) = paint(&conn, &mut icon) {
+                            eprintln!("托盘图标绘制失败：{error}");
+                        }
+                    }
+                }
+                TrayIconMsg::Tooltip(text) => {
+                    if let Err(error) = set_net_wm_name(&conn, icon.window, &text) {
+                        eprintln!("托盘提示更新失败：{error}");
+                    }
+                }
+            }
+        }
+        let Some(event) = conn.poll_for_event().map_err(|error| error.to_string())? else {
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        };
         match event {
             Event::Expose(expose) if expose.window == icon.window && expose.count == 0 => {
                 if let Err(error) = paint(&conn, &mut icon) {
@@ -144,6 +177,8 @@ struct IconWindow {
     green: u32,
     blue: u32,
     bg: (u8, u8, u8),
+    /// 是否有稍后提醒在等待：有则在图标右上角画橙色角标。
+    badge: bool,
 }
 
 struct TrayVisual {
@@ -203,8 +238,10 @@ fn dock(conn: &RustConnection, screen_num: usize) -> Result<IconWindow, String> 
         window,
         AtomEnum::WM_NAME,
         AtomEnum::STRING,
-        b"reminder-tray",
+        b"reminder-desktop",
     ))?;
+    // 面板的悬浮提示读 _NET_WM_NAME（UTF8），设计稿要求「桌面提醒 · 后台运行中」。
+    set_net_wm_name(conn, window, "桌面提醒 · 后台运行中")?;
     let gc = conn.generate_id().map_err(|error| error.to_string())?;
     checked(conn.create_gc(gc, window, &CreateGCAux::new()))?;
     checked(conn.map_window(window))?;
@@ -222,6 +259,7 @@ fn dock(conn: &RustConnection, screen_num: usize) -> Result<IconWindow, String> 
         green: visual.green,
         blue: visual.blue,
         bg,
+        badge: false,
     };
     paint(conn, &mut icon)?;
     let opcode = intern(conn, "_NET_SYSTEM_TRAY_OPCODE")?;
@@ -292,7 +330,7 @@ fn paint(conn: &RustConnection, icon: &mut IconWindow) -> Result<(), String> {
     let height = icon.height.max(1);
     icon.width = width;
     icon.height = height;
-    let pixels = bell_image(width, height, icon.red, icon.green, icon.blue, icon.bg);
+    let pixels = tray_image(icon);
     if icon.pixmap == 0 || icon.pixmap_w != width || icon.pixmap_h != height {
         let pixmap = conn.generate_id().map_err(|error| error.to_string())?;
         checked(conn.create_pixmap(icon.depth, pixmap, icon.window, width, height))?;
@@ -588,6 +626,64 @@ fn bell_glyph(nx: f32, ny: f32) -> bool {
     )
 }
 
+/// 托盘图标原图：设计稿第 10 页的规格，128×128 的深青圆角方块 + 白色铃铛。
+const TRAY_PNG: &[u8] = include_bytes!("../assets/tray/icon-128.png");
+
+fn tray_source() -> Result<&'static image::RgbaImage, String> {
+    static SOURCE: OnceLock<image::RgbaImage> = OnceLock::new();
+    if let Some(loaded) = SOURCE.get() {
+        return Ok(loaded);
+    }
+    let decoded = image::load_from_memory(TRAY_PNG).map_err(|error| error.to_string())?;
+    let rgba = decoded.to_rgba8();
+    Ok(SOURCE.get_or_init(|| rgba))
+}
+
+/// 把设计稿图标缩放到托盘窗口尺寸，叠在面板底色上；有稍后提醒时补橙色角标。
+fn tray_image(icon: &IconWindow) -> Vec<u8> {
+    let width = icon.width.max(1);
+    let height = icon.height.max(1);
+    let Ok(source) = tray_source() else {
+        return bell_image(width, height, icon.red, icon.green, icon.blue, icon.bg);
+    };
+    let scaled = image::imageops::resize(
+        source,
+        u32::from(width),
+        u32::from(height),
+        image::imageops::FilterType::Lanczos3,
+    );
+    // 设计稿：角标直径约为图标的 38%，外面一圈 2px 面板底色描边。
+    let radius = (f32::from(width) * 0.19).max(2.5);
+    let ring = radius + (f32::from(width) * 0.08).max(1.0);
+    let cx = f32::from(width) - ring - 0.5;
+    let cy = ring - 0.5;
+    let badge = (247, 144, 9); // #F79009
+    let mut data = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let px = scaled.get_pixel(u32::from(x), u32::from(y)).0;
+            let a = f32::from(px[3]) / 255.0;
+            let (mut r, mut g, mut b) = (
+                (f32::from(px[0]) * a + f32::from(icon.bg.0) * (1.0 - a)).round() as u8,
+                (f32::from(px[1]) * a + f32::from(icon.bg.1) * (1.0 - a)).round() as u8,
+                (f32::from(px[2]) * a + f32::from(icon.bg.2) * (1.0 - a)).round() as u8,
+            );
+            if icon.badge {
+                let dx = f32::from(x) + 0.5 - cx;
+                let dy = f32::from(y) + 0.5 - cy;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist <= radius {
+                    (r, g, b) = badge;
+                } else if dist <= ring {
+                    (r, g, b) = icon.bg;
+                }
+            }
+            data.extend_from_slice(&pack(r, g, b, 255, icon.red, icon.green, icon.blue, 0).to_ne_bytes());
+        }
+    }
+    data
+}
+
 fn bell_image(width: u16, height: u16, red: u32, green: u32, blue: u32, bg: (u8, u8, u8)) -> Vec<u8> {
     let mut data = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height {
@@ -596,7 +692,7 @@ fn bell_image(width: u16, height: u16, red: u32, green: u32, blue: u32, bg: (u8,
             let ny = (f32::from(y) + 0.5) / f32::from(height);
             let (r, g, b) = if !tile_shape(nx, ny) {
                 bg
-            } else if bell_glyph(nx, ny) {
+            } else if bell_shape(nx, ny) {
                 (255, 255, 255)
             } else {
                 TILE_TEAL
@@ -630,6 +726,20 @@ fn channel(value: u8, mask: u32) -> u32 {
         return 0;
     }
     (u32::from(value) * (mask >> mask.trailing_zeros()).min(255) / 255) << mask.trailing_zeros()
+}
+
+/// 面板把 _NET_WM_NAME 当托盘悬停提示，用 UTF8_STRING 写中文。
+fn set_net_wm_name(conn: &RustConnection, window: u32, text: &str) -> Result<(), String> {
+    let name = intern(conn, "_NET_WM_NAME")?;
+    let utf8 = intern(conn, "UTF8_STRING")?;
+    checked(conn.change_property8(
+        PropMode::REPLACE,
+        window,
+        name,
+        utf8,
+        text.as_bytes(),
+    ))?;
+    conn.flush().map_err(|error| error.to_string())
 }
 
 fn checked(
