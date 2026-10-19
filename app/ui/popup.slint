@@ -230,14 +230,16 @@ export component PopupWindow inherits Window {
                         vertical-stretch: 0;
                     }
 
+                    // 正文框：高度按文本测量自适应（padding 上下各 12 → +24px），
+                    // 最矮 44px 保证空正文时也有形；超高部分在框内滚动，
+                    // 上限保证标题栏/稍后提醒/底栏在 540px 窗口里不被挤出屏幕。
                     Rectangle {
                         border-radius: 8px;
                         border-width: 1px;
                         border-color: Theme.line;
                         background: Theme.sub;
                         vertical-stretch: 0;
-                        min-height: 44px;
-                        max-height: 120px;
+                        height: min(max(body-fit.preferred-height + 24px, 44px), 128px);
                         ScrollView {
                             VerticalLayout {
                                 padding-left: 14px;
@@ -251,6 +253,15 @@ export component PopupWindow inherits Window {
                                     wrap: word-wrap;
                                 }
                             }
+                        }
+                        // 隐藏的测量文本：按正文同宽换行，给出所需高度。
+                        body-fit := Text {
+                            visible: false;
+                            x: 14px;
+                            width: parent.width - 28px;
+                            text: root.body;
+                            font-size: 14px;
+                            wrap: word-wrap;
                         }
                     }
 
