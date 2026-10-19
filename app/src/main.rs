@@ -4,6 +4,7 @@ mod autostart;
 mod glue;
 mod instance;
 mod logutil;
+mod notify;
 mod runtime;
 mod system_theme;
 mod xembed_tray;

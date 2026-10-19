@@ -1129,9 +1129,11 @@ impl Session {
         };
         let fired_ids: Vec<String> = notices.iter().map(|item| item.id.clone()).collect();
         for notice in notices {
+            self.send_fallback_notification(&notice);
             self.open_popup(notice);
         }
         if let Some(summary) = overflow {
+            self.send_fallback_notification(&summary);
             self.open_popup(summary);
         }
         self.refresh_list();
@@ -1142,6 +1144,22 @@ impl Session {
             } else if fired_ids.iter().any(|fired| fired == &id) {
                 self.toast("这条提醒刚刚触发，当前编辑还没保存");
             }
+        }
+    }
+
+    /// Wayland 会话下，在弹窗之外补发一条系统通知作为兜底，避免弹窗被合成器忽略或吞掉。
+    fn send_fallback_notification(&self, notice: &Notice) {
+        if !crate::notify::enabled() {
+            return;
+        }
+        let body = if notice.body.trim().is_empty() {
+            notice.when_text.clone()
+        } else {
+            notice.body.clone()
+        };
+        match crate::notify::send(&notice.title, &body) {
+            Ok(()) => self.log.log("INFO", &format!("已发送系统通知兜底 id={}", notice.id)),
+            Err(error) => self.log.log("WARN", &format!("系统通知兜底未送达：{error}")),
         }
     }
 
