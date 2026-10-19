@@ -207,6 +207,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
             timed.refresh_list();
         }
         timed.poll_show_request();
+        timed.poll_add_requests();
         let batch: Vec<Vec<Notice>> = notice_rx_timer.borrow_mut().try_iter().collect();
         for notices in batch {
             timed.show_notices(notices);
@@ -1704,6 +1705,35 @@ impl Session {
             let _ = fs::remove_file(&flag);
             self.show_main();
             self.log.log("INFO", "收到再次打开主窗口的请求");
+        }
+    }
+
+    /// 收取命令行子进程写下的「添加提醒」请求，并入库并刷新列表。
+    fn poll_add_requests(&self) {
+        let path = self.data_dir.join(reminder_core::cli::ADD_REQUEST_FILE);
+        let reminders = reminder_core::cli::take_add_requests(&path);
+        if reminders.is_empty() {
+            return;
+        }
+        let mut added = 0usize;
+        {
+            let mut store = lock_store(&self.store);
+            for reminder in reminders {
+                if store.reminders.len() >= reminder_core::model::REMINDER_CAP {
+                    self.log.log("WARN", "命令行添加被拒：提醒数量已达上限");
+                    self.toast("提醒数量已达上限，命令行添加失败");
+                    break;
+                }
+                match store.upsert(reminder) {
+                    Ok(()) => added += 1,
+                    Err(error) => self.log.log("WARN", &format!("命令行提醒保存失败：{error}")),
+                }
+            }
+        }
+        if added > 0 {
+            runtime::poke(&self.wake);
+            self.refresh_list();
+            self.toast(&format!("已从命令行添加 {added} 条提醒"));
         }
     }
 

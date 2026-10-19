@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod autostart;
+mod cli;
 mod glue;
 mod instance;
 mod logutil;
@@ -16,20 +17,37 @@ fn main() {
     let code = match run() {
         Ok(()) => 0,
         Err(error) => {
-            eprintln!("桌面提醒启动失败：{error}");
+            eprintln!("桌面提醒：{error}");
             1
         }
     };
     std::process::exit(code);
 }
 
+const USAGE: &str = "\
+用法：
+  reminder add <标题> --in 5m [--body 正文]      5 分钟后提醒（也可用 1h、2d、45）
+  reminder add <标题> --at 09:30                  今天 09:30（已过则顺延到明天）
+  reminder add <标题> --cron \"0 9 * * 1-5\"       按 Cron 周期提醒
+  直接运行 reminder 打开界面。";
+
 fn run() -> Result<(), String> {
-    if std::env::args().any(|arg| arg == "--check") {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--check") {
         self_check()?;
         println!("ok");
         return Ok(());
     }
-    glue::run(std::env::args().any(|arg| arg == "--smoke"))
+    if cli::is_add(&args) {
+        return cli::run(&args[1..]);
+    }
+    match args.first().map(String::as_str) {
+        Some(token) if !token.starts_with('-') => {
+            return Err(format!("未知子命令：{token}\n\n{USAGE}"));
+        }
+        _ => {}
+    }
+    glue::run(args.iter().any(|arg| arg == "--smoke"))
 }
 
 fn self_check() -> Result<(), String> {

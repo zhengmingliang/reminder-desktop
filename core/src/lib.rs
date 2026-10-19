@@ -2,6 +2,7 @@
 //! 界面进程只调用这里，方便单独测试，也避免以后换 UI 时改调度规则。
 
 pub mod audio;
+pub mod cli;
 pub mod model;
 pub mod schedule;
 pub mod settings;
