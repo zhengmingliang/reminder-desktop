@@ -161,6 +161,14 @@ pub fn run(smoke: bool) -> Result<(), String> {
     session.refresh_backups();
     session.tick_clock();
 
+    // 视觉走查辅助：可指定初始视图与提醒类型，例如 REMINDER_UI_VIEW=edit REMINDER_UI_KIND=at。
+    if let Ok(view) = std::env::var("REMINDER_UI_VIEW") {
+        ui.set_main_view(view.into());
+    }
+    if let Ok(kind) = std::env::var("REMINDER_UI_KIND") {
+        ui.set_kind(kind.into());
+    }
+
     // 视觉走查辅助：设置该环境变量时启动即弹出预览弹窗（不落库、不改数据）。
     if std::env::var_os("REMINDER_PREVIEW_POPUP").is_some() {
         if let Some(ui) = ui.as_weak().upgrade() {
@@ -1010,8 +1018,31 @@ impl Session {
             })
             .collect();
         let visible = rows.len();
+        // 概览的「今天时间线」「最近记录」也用真实数据。
+        let timeline = reminder_core::today_timeline(&store.reminders, now);
+        let timeline_rows: Vec<TimelineRow> = timeline
+            .iter()
+            .map(|entry| TimelineRow {
+                time_text: entry.time_text.clone().into(),
+                title: entry.title.clone().into(),
+                status: entry.status.clone().into(),
+                kind: entry.kind.clone().into(),
+                is_next: entry.is_next,
+            })
+            .collect();
+        let record_list: Vec<RecordRow> = reminder_core::recent_records(&store.reminders, now)
+            .iter()
+            .map(|entry| RecordRow {
+                time_text: entry.time_text.clone().into(),
+                title: entry.title.clone().into(),
+                badge_text: entry.status.clone().into(),
+                badge_kind: entry.kind.clone().into(),
+            })
+            .collect();
         drop(store);
         sync_rows(&self.rows, rows);
+        ui.set_timeline(ModelRc::new(VecModel::from(timeline_rows)));
+        ui.set_records(ModelRc::new(VecModel::from(record_list)));
         ui.set_list_empty(visible == 0);
         ui.set_empty_text(if total == 0 {
             "还没有提醒。点击「新建提醒」创建第一条。"

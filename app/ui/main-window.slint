@@ -30,6 +30,23 @@ export struct PreviewLine {
     text: string,
 }
 
+// 概览「今天时间线」的一行：kind = fired / snooze / missed / pending / now。
+export struct TimelineRow {
+    time-text: string,
+    title: string,
+    status: string,
+    kind: string,
+    is-next: bool,
+}
+
+// 概览「最近记录」的一行：badge-kind = ok / warn / danger。
+export struct RecordRow {
+    time-text: string,
+    title: string,
+    badge-text: string,
+    badge-kind: string,
+}
+
 // 系统标题栏：32px 深色条，标题居中，右侧三个 12px 图标（最小化 / 最大化 / 关闭）。
 component TitleBar inherits Rectangle {
     in property <string> caption;
@@ -287,7 +304,11 @@ component RowLine inherits Rectangle {
     in property <bool> divider: true;
     in property <string> mono-family;
 
-    property <color> dot: root.kind == "fired" ? Theme.ok : root.kind == "snooze" ? Theme.warn-ic : root.kind == "paused" ? Theme.ph : Theme.pri;
+    property <bool> upcoming: root.kind == "pending" || root.kind == "missed";
+    property <color> dot: root.kind == "fired" ? Theme.ok
+        : root.kind == "snooze" ? Theme.warn-ic
+        : root.kind == "missed" ? Theme.danger
+        : Theme.pri;
 
     height: root.shown ? (root.now-line ? 30px : 36px) : 0px;
     visible: root.shown;
@@ -306,7 +327,8 @@ component RowLine inherits Rectangle {
             text: root.time-text;
             font-family: root.mono-family;
             font-size: 12px;
-            color: root.now-line ? Theme.pri-text : Theme.text3;
+            color: root.now-line || root.highlighted ? Theme.pri-text : Theme.text3;
+            font-weight: root.highlighted ? 500 : 400;
             overflow: elide;
             vertical-alignment: center;
         }
@@ -320,7 +342,10 @@ component RowLine inherits Rectangle {
                 width: 8px;
                 height: 8px;
                 border-radius: 4px;
-                background: root.dot;
+                // 待触发的圆点是空心描边，其余按语义填色。
+                background: root.upcoming && !root.highlighted ? transparent : root.dot;
+                border-width: root.upcoming && !root.highlighted ? 1.5px : 0px;
+                border-color: Theme.text3;
             }
         }
         if root.now-line : Rectangle { horizontal-stretch: 1; height: 100%; Rectangle { y: (parent.height - 1px) / 2; width: 100%; height: 1px; background: Theme.pri-text; opacity: 0.5; } }
@@ -328,8 +353,8 @@ component RowLine inherits Rectangle {
             horizontal-stretch: root.now-line ? 0 : 1;
             text: root.title;
             font-size: 13px;
-            font-weight: root.now-line ? 500 : root.kind == "pending" || root.kind == "snooze" ? 600 : 400;
-            color: root.now-line ? Theme.pri-text : root.kind == "paused" ? Theme.text3 : Theme.text2;
+            font-weight: root.now-line || root.highlighted ? 600 : 400;
+            color: root.now-line ? Theme.pri-text : root.highlighted ? Theme.text : root.kind == "paused" ? Theme.text3 : Theme.text2;
             overflow: elide;
             vertical-alignment: center;
         }
@@ -478,6 +503,8 @@ export component MainWindow inherits Window {
     in-out property <string> cron-error: "";
     in-out property <string> form-error: "";
     in-out property <[PreviewLine]> preview-lines: [];
+    in-out property <[TimelineRow]> timeline: [];
+    in-out property <[RecordRow]> records: [];
     in-out property <string> preview-head: "";
     in-out property <string> preview-next: "";
     in-out property <bool> form-sound: true;
@@ -529,7 +556,8 @@ export component MainWindow inherits Window {
 
     // 界面本地状态
     property <string> quick-text: "";
-    property <bool> adv-open: true;
+    property <int> at-preset-index: -1;
+    property <bool> adv-open: false;
     property <bool> custom-cron: false;
     property <bool> dirty: false;
 
@@ -733,27 +761,49 @@ export component MainWindow inherits Window {
                             }
                         }
 
+                        // 三个 32px 图标按钮：整高容器里垂直居中，间距 4。
                         HorizontalLayout {
                             height: 100%;
                             spacing: 4px;
-                            ToolBtn {
-                                icon-name: "download-text2";
-                                tip-title: "备份";
-                                tip-body: "把全部提醒导出为备份文件，可用于迁移或恢复。";
-                                clicked => { root.backup(); }
+                            Rectangle {
+                                width: 32px;
+                                height: 100%;
+                                horizontal-stretch: 0;
+                                ToolBtn {
+                                    icon-name: "download-text2";
+                                    tip-x-offset: -96px;
+                                    tip-title: "备份";
+                                    tip-body: "把全部提醒导出为备份文件，可用于迁移或恢复。";
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.backup(); }
+                                }
                             }
-                            ToolBtn {
-                                icon-name: "tray-down-text2";
-                                tip-title: "隐藏到托盘";
-                                tip-body: "关闭窗口，程序继续在后台按时提醒。点击托盘图标可重新打开。";
-                                clicked => { root.hide-to-tray(); }
+                            Rectangle {
+                                width: 32px;
+                                height: 100%;
+                                horizontal-stretch: 0;
+                                ToolBtn {
+                                    icon-name: "tray-down-text2";
+                                    tip-x-offset: -96px;
+                                    tip-title: "隐藏到托盘";
+                                    tip-body: "关闭窗口，程序继续在后台按时提醒。点击托盘图标可重新打开。";
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.hide-to-tray(); }
+                                }
                             }
-                            ToolBtn {
-                                icon-name: "power-text2";
-                                tip-title: "退出";
-                                tip-body: "完全退出程序。退出后不会再弹出任何提醒。";
-                                danger: true;
-                                clicked => { root.quit(); }
+                            Rectangle {
+                                width: 32px;
+                                height: 100%;
+                                horizontal-stretch: 0;
+                                ToolBtn {
+                                    icon-name: "power-text2";
+                                    tip-x-offset: -96px;
+                                    tip-title: "退出";
+                                    tip-body: "完全退出程序。退出后不会再弹出任何提醒。";
+                                    danger: true;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.quit(); }
+                                }
                             }
                         }
                     }
@@ -1230,12 +1280,17 @@ export component MainWindow inherits Window {
                                                 color: Theme.text;
                                                 vertical-alignment: center;
                                             }
-                                            RowLine { time-text: "12:00"; title: "取快递"; status: "已触发"; kind: "fired"; mono-family: root.mono-font; }
-                                            RowLine { time-text: "19:48"; title: "晚上记得打电话"; status: "已稍后"; kind: "snooze"; mono-family: root.mono-font; }
-                                            RowLine { time-text: "19:58"; title: ""; status: "现在"; kind: "pending"; mono-family: root.mono-font; now-line: true; }
-                                            RowLine { time-text: "20:03"; title: "晚上记得打电话"; status: "5 分钟后"; kind: "pending"; mono-family: root.mono-font; highlighted: true; }
-                                            RowLine { time-text: "21:00"; title: "喝水休息一下"; status: "待触发"; kind: "pending"; mono-family: root.mono-font; divider: false; }
-                                            if root.list-empty : Text {
+                                            for entry[index] in root.timeline : RowLine {
+                                                time-text: entry.time-text;
+                                                title: entry.title;
+                                                status: entry.status;
+                                                kind: entry.kind;
+                                                now-line: entry.kind == "now";
+                                                highlighted: entry.is-next;
+                                                divider: index + 1 < root.timeline.length && entry.kind != "now" && !entry.is-next;
+                                                mono-family: root.mono-font;
+                                            }
+                                            if root.timeline.length == 0 : Text {
                                                 height: 48px;
                                                 text: "今天还没有提醒";
                                                 font-size: 13px;
@@ -1261,11 +1316,14 @@ export component MainWindow inherits Window {
                                                 color: Theme.text;
                                                 vertical-alignment: center;
                                             }
-                                            RecordLine { time-text: "今天 19:48"; title: "晚上记得打电话"; badge-text: "稍后 15 分钟"; badge-kind: "warn"; }
-                                            RecordLine { time-text: "今天 12:00"; title: "取快递"; badge-text: "已确认"; badge-kind: "ok"; }
-                                            RecordLine { time-text: "昨天 09:00"; title: "站会"; badge-text: "已错过"; badge-kind: "warn"; }
-                                            RecordLine { time-text: "昨天 08:30"; title: "喝水休息一下"; badge-text: "已确认"; badge-kind: "ok"; divider: false; }
-                                            if root.list-empty : Text {
+                                            for entry[index] in root.records : RecordLine {
+                                                time-text: entry.time-text;
+                                                title: entry.title;
+                                                badge-text: entry.badge-text;
+                                                badge-kind: entry.badge-kind;
+                                                divider: index + 1 < root.records.length;
+                                            }
+                                            if root.records.length == 0 : Text {
                                                 height: 48px;
                                                 text: "暂无记录";
                                                 font-size: 13px;
@@ -1618,7 +1676,6 @@ export component MainWindow inherits Window {
                                                 }
                                                 HorizontalLayout {
                                                     spacing: 8px;
-                                                    alignment: start;
                                                     Chip {
                                                         label: "5 分钟";
                                                         active: root.form-minutes == "5";
@@ -1659,27 +1716,30 @@ export component MainWindow inherits Window {
                                                 spacing: 12px;
                                                 HorizontalLayout {
                                                     spacing: 8px;
-                                                    alignment: start;
                                                     Chip {
                                                         label: "今晚 20:00";
-                                                        clicked => { root.at-preset(0); }
+                                                        active: root.at-preset-index == 0;
+                                                        clicked => { root.at-preset-index = 0; root.at-preset(0); }
                                                     }
                                                     Chip {
                                                         label: "今晚 21:00";
-                                                        clicked => { root.at-preset(1); }
+                                                        active: root.at-preset-index == 1;
+                                                        clicked => { root.at-preset-index = 1; root.at-preset(1); }
                                                     }
                                                     Chip {
                                                         label: "明早 9:00";
-                                                        clicked => { root.at-preset(2); }
+                                                        active: root.at-preset-index == 2;
+                                                        clicked => { root.at-preset-index = 2; root.at-preset(2); }
                                                     }
                                                     Chip {
                                                         label: "下周一 9:00";
-                                                        clicked => { root.at-preset(3); }
+                                                        active: root.at-preset-index == 3;
+                                                        clicked => { root.at-preset-index = 3; root.at-preset(3); }
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
                                                 }
                                                 HorizontalLayout {
                                                     spacing: 12px;
-                                                    alignment: start;
                                                     VerticalLayout {
                                                         horizontal-stretch: 1;
                                                         spacing: 6px;
@@ -1748,7 +1808,6 @@ export component MainWindow inherits Window {
                                                 spacing: 12px;
                                                 HorizontalLayout {
                                                     spacing: 8px;
-                                                    alignment: start;
                                                     Chip {
                                                         label: "每小时";
                                                         active: root.form-cron == "0 * * * *";
@@ -1783,7 +1842,6 @@ export component MainWindow inherits Window {
                                                 }
                                                 HorizontalLayout {
                                                     spacing: 12px;
-                                                    alignment: start;
                                                     VerticalLayout {
                                                         width: 160px;
                                                         horizontal-stretch: 0;

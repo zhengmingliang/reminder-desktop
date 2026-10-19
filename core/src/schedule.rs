@@ -396,6 +396,187 @@ pub fn format_distance(from: DateTime<Local>, to: DateTime<Local>) -> String {
     format!("{}后", parts.join(" "))
 }
 
+/// 概览「今天时间线」里的一行。kind：fired / snooze / missed / pending / now。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimelineEntry {
+    pub at_ms: i64,
+    pub time_text: String,
+    pub title: String,
+    pub status: String,
+    pub kind: String,
+    pub is_next: bool,
+}
+
+/// 汇总今天 0 点到 24 点之间所有会触发的时点（含已触发 / 已错过 / 已稍后），
+/// 过去的排在前面，未来的排在后面，第一个未来项标记为 is_next。
+pub fn today_timeline(reminders: &[Reminder], now: DateTime<Local>) -> Vec<TimelineEntry> {
+    let start = local_day_start(now);
+    let end = start + Duration::days(1);
+    let start_ms = local_to_millis(start);
+    let end_ms = local_to_millis(end);
+    let now_ms = local_to_millis(now);
+
+    let mut entries: Vec<TimelineEntry> = Vec::new();
+    for reminder in reminders {
+        let mut push = |at_ms: i64, kind: &str, status: &str| {
+            if at_ms < start_ms || at_ms >= end_ms {
+                return;
+            }
+            let time_text = millis_to_local(at_ms).format("%H:%M").to_string();
+            entries.push(TimelineEntry {
+                at_ms,
+                time_text,
+                title: reminder.title.clone(),
+                status: status.to_string(),
+                kind: kind.to_string(),
+                is_next: false,
+            });
+        };
+        // 已被推迟到今天的触发点。
+        if reminder.enabled {
+            if let Some(until) = reminder.snooze_until_ms {
+                push(until, "snooze", "已稍后");
+            }
+        }
+        match &reminder.schedule {
+            Schedule::Delay { fire_at_ms, .. } | Schedule::At { fire_at_ms } => {
+                let fired = reminder
+                    .last_fired_at_ms
+                    .map(|fired| fired >= *fire_at_ms)
+                    .unwrap_or(false);
+                let (kind, status) = if fired {
+                    ("fired", "已触发")
+                } else if *fire_at_ms <= now_ms {
+                    ("missed", "已错过")
+                } else {
+                    ("pending", "待触发")
+                };
+                push(*fire_at_ms, kind, status);
+            }
+            Schedule::Cron { expression } => {
+                let Ok(cron) = parse_cron(expression) else {
+                    continue;
+                };
+                let mut cursor = if reminder.created_at_ms > start_ms {
+                    millis_to_local(reminder.created_at_ms)
+                } else {
+                    start
+                };
+                for _ in 0..64 {
+                    let Ok(next) = cron.find_next_occurrence(&cursor, false) else {
+                        break;
+                    };
+                    if next >= end {
+                        break;
+                    }
+                    let at_ms = local_to_millis(next);
+                    let fired = reminder
+                        .last_fired_at_ms
+                        .map(|fired| fired >= at_ms)
+                        .unwrap_or(false);
+                    let (kind, status) = if fired {
+                        ("fired", "已触发")
+                    } else if at_ms <= now_ms {
+                        ("missed", "已错过")
+                    } else {
+                        ("pending", "待触发")
+                    };
+                    push(at_ms, kind, status);
+                    cursor = next + Duration::seconds(1);
+                }
+            }
+        }
+    }
+    entries.sort_by_key(|entry| entry.at_ms);
+
+    // 第一个未来项就是「下一次提醒」，展示相对时间。
+    if let Some(next) = entries.iter_mut().find(|entry| entry.at_ms > now_ms) {
+        next.is_next = true;
+        next.status = format_distance(now, millis_to_local(next.at_ms));
+    }
+
+    // 条目太多时做窗口截断：过去保留最近 4 条，未来保留最近 8 条。
+    if entries.len() > 12 {
+        let past_end = entries
+            .iter()
+            .position(|entry| entry.at_ms > now_ms)
+            .unwrap_or(entries.len());
+        let (past, future) = entries.split_at(past_end);
+        let past_from = past.len().saturating_sub(4);
+        let future_to = future.len().min(8);
+        let mut kept: Vec<TimelineEntry> = past[past_from..].to_vec();
+        kept.extend_from_slice(&future[..future_to]);
+        entries = kept;
+    }
+
+    // 在「现在」的位置插入分割线：过去与未来都存在时才有意义。
+    if entries.iter().any(|entry| entry.at_ms > now_ms) {
+        let at = entries.iter().position(|entry| entry.at_ms > now_ms).unwrap_or(entries.len());
+        entries.insert(
+            at,
+            TimelineEntry {
+                at_ms: now_ms,
+                time_text: now.format("%H:%M").to_string(),
+                title: String::new(),
+                status: "现在".to_string(),
+                kind: "now".to_string(),
+                is_next: false,
+            },
+        );
+    }
+    entries
+}
+
+/// 概览「最近记录」里的一行。kind：ok / warn / danger。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordEntry {
+    pub time_text: String,
+    pub title: String,
+    pub status: String,
+    pub kind: String,
+}
+
+/// 用每条提醒的最近一次触发时间拼出最近记录，最多 4 条。
+pub fn recent_records(reminders: &[Reminder], now: DateTime<Local>) -> Vec<RecordEntry> {
+    let mut fired: Vec<RecordEntry> = Vec::new();
+    for reminder in reminders {
+        let Some(ms) = reminder.last_fired_at_ms else {
+            continue;
+        };
+        let (status, kind) = if reminder.snooze_count > 0 {
+            ("已稍后", "warn")
+        } else {
+            ("已确认", "ok")
+        };
+        fired.push(RecordEntry {
+            time_text: format_point(millis_to_local(ms), now, false),
+            title: reminder.title.clone(),
+            status: status.to_string(),
+            kind: kind.to_string(),
+        });
+    }
+    fired.sort_by(|left, right| left.time_text.cmp(&right.time_text));
+    fired.reverse();
+    fired.truncate(4);
+    fired
+}
+
+fn local_day_start(now: DateTime<Local>) -> DateTime<Local> {
+    let naive = now
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap_or_else(|| now.naive_local());
+    Local
+        .from_local_datetime(&naive)
+        .single()
+        .unwrap_or(now)
+}
+
+fn local_to_millis(time: DateTime<Local>) -> i64 {
+    time.timestamp_millis()
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

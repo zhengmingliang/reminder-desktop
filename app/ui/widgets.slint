@@ -60,9 +60,24 @@ export component ToolBtn inherits Rectangle {
     in property <string> tip-body;
     in property <bool> danger: false;
     in property <color> ink: Theme.text2;
+    // 气泡默认在按钮下方居中；靠窗口右缘的按钮把它往左挪，避免被窗口裁掉。
+    in property <length> tip-x-offset: 0px;
     callback clicked();
 
-    property <bool> show-tip: area.has-hover && root.tip-title != "";
+    // 设计稿：悬停或聚焦满 500ms 才出现，移开立即消失。
+    property <bool> hovering: area.has-hover;
+    property <bool> tip-armed: false;
+    property <bool> show-tip: root.hovering && root.tip-armed && root.tip-title != "";
+
+    tip-timer := Timer {
+        interval: 500ms;
+        running: root.hovering && !root.tip-armed;
+        triggered => { root.tip-armed = true; }
+    }
+
+    changed hovering => {
+        if (!root.hovering) { root.tip-armed = false; }
+    }
 
     width: 32px;
     height: 32px;
@@ -83,12 +98,27 @@ export component ToolBtn inherits Rectangle {
         clicked => { root.clicked(); }
     }
 
+    // Tooltip：208 宽、#1F2933、圆角 6、内边距 8 10、上方 8px 小箭头、投影 0 4 12。
     if show-tip : Rectangle {
-        x: (parent.width - 208px) / 2;
+        x: (parent.width - 208px) / 2 + root.tip-x-offset;
         y: parent.height + 8px;
         width: 208px;
         border-radius: 6px;
         background: Theme.tip-bg;
+        drop-shadow-blur: 12px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #10182840;
+        // 指向按钮的小箭头（8×8 菱形，贴着气泡上沿）。
+        Path {
+            x: min(192px, max(8px, 104px - root.tip-x-offset));
+            y: -4px;
+            width: 8px;
+            height: 8px;
+            fill: Theme.tip-bg;
+            viewbox-width: 8;
+            viewbox-height: 8;
+            commands: "M 4 0 L 8 4 L 4 8 L 0 4 Z";
+        }
         VerticalLayout {
             padding-left: 10px;
             padding-right: 10px;
@@ -196,10 +226,17 @@ export component IconTextBtn inherits Rectangle {
         padding-left: root.pad-x;
         padding-right: root.pad-x;
         spacing: 6px;
-        alignment: center;
-        NamedIcon {
-            icon-name: root.icon-name;
-            s: root.icon-size;
+        // 图标是固定高度的方块，在整高容器里手动居中，才能和文字对齐。
+        Rectangle {
+            width: root.icon-size;
+            height: 100%;
+            horizontal-stretch: 0;
+            NamedIcon {
+                icon-name: root.icon-name;
+                s: root.icon-size;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
         }
         Text {
             text: root.label;

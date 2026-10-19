@@ -193,7 +193,6 @@ export component PopupWindow inherits Window {
                                 padding-left: 10px;
                                 padding-right: 8px;
                                 spacing: 4px;
-                                alignment: center;
                                 Text {
                                     text: "还有 " + (root.stack-count - 1) + " 条";
                                     font-size: 12px;
@@ -201,11 +200,18 @@ export component PopupWindow inherits Window {
                                     vertical-alignment: center;
                                     horizontal-stretch: 0;
                                 }
-                                NamedIcon {
-                                    icon-name: "chevron-right-text3";
-                                    s: 12px;
+                                Rectangle {
+                                    width: 12px;
+                                    height: 100%;
                                     horizontal-stretch: 0;
+                                    NamedIcon {
+                                        icon-name: "chevron-right-text3";
+                                        s: 12px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
                                 }
+                                Rectangle { horizontal-stretch: 1; }
                             }
                             TouchArea {
                                 mouse-cursor: pointer;
@@ -366,70 +372,85 @@ export component PopupWindow inherits Window {
                         padding-right: 24px;
                         spacing: 8px;
 
+                        // 「打开主窗口」：34px 按钮在 64px 底栏里垂直居中。
                         Rectangle {
-                            height: 34px;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: open-area.has-hover ? Theme.line2 : transparent;
-                            background: open-area.has-hover ? Theme.hover : transparent;
+                            height: 100%;
                             horizontal-stretch: 0;
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                spacing: 6px;
-                                alignment: center;
-                                NamedIcon {
-                                    icon-name: "external-link-text2";
-                                    s: 14px;
-                                    horizontal-stretch: 0;
+                            width: open-btn.preferred-width;
+                            open-btn := Rectangle {
+                                y: (parent.height - self.height) / 2;
+                                height: 34px;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: open-area.has-hover ? Theme.line2 : transparent;
+                                background: open-area.has-hover ? Theme.hover : transparent;
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    spacing: 6px;
+                                    Rectangle {
+                                        width: 14px;
+                                        height: 100%;
+                                        horizontal-stretch: 0;
+                                        NamedIcon {
+                                            icon-name: "external-link-text2";
+                                            s: 14px;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                    Text {
+                                        text: "打开主窗口";
+                                        font-size: 13px;
+                                        font-weight: 500;
+                                        color: Theme.text2;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 0;
+                                    }
                                 }
-                                Text {
-                                    text: "打开主窗口";
-                                    font-size: 13px;
-                                    font-weight: 500;
-                                    color: Theme.text2;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 0;
+                                open-area := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.open-main(); }
                                 }
-                            }
-                            open-area := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { root.open-main(); }
                             }
                         }
 
                         Rectangle { horizontal-stretch: 1; }
 
                         Rectangle {
-                            height: 36px;
-                            border-radius: 6px;
-                            background: done-area.has-hover ? Theme.pri-h : Theme.pri;
+                            height: 100%;
                             horizontal-stretch: 0;
-                            HorizontalLayout {
-                                padding-left: 20px;
-                                padding-right: 20px;
-                                spacing: 10px;
-                                alignment: center;
-                                Text {
-                                    text: "知道了";
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                    color: Theme.on-pri;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 0;
+                            width: done-btn.preferred-width;
+                            done-btn := Rectangle {
+                                y: (parent.height - self.height) / 2;
+                                height: 36px;
+                                border-radius: 6px;
+                                background: done-area.has-hover ? Theme.pri-h : Theme.pri;
+                                HorizontalLayout {
+                                    padding-left: 20px;
+                                    padding-right: 20px;
+                                    spacing: 10px;
+                                    Text {
+                                        text: "知道了";
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                        color: Theme.on-pri;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 0;
+                                    }
+                                    Text {
+                                        text: "Enter";
+                                        font-family: root.mono-font;
+                                        font-size: 11px;
+                                        color: Theme.on-pri;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 0;
+                                    }
                                 }
-                                Text {
-                                    text: "Enter";
-                                    font-family: root.mono-font;
-                                    font-size: 11px;
-                                    color: Theme.on-pri;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 0;
+                                done-area := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.dismiss(); }
                                 }
-                            }
-                            done-area := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { root.dismiss(); }
                             }
                         }
                     }
