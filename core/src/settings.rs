@@ -112,6 +112,36 @@ impl DndMode {
     }
 }
 
+/// 列表排列方式：按状态分组（默认），或按下次触发时间分档（今天 / 明天 / 本周 / 更远）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortMode {
+    Status,
+    Time,
+}
+
+impl Default for SortMode {
+    fn default() -> Self {
+        SortMode::Status
+    }
+}
+
+impl SortMode {
+    pub fn as_index(self) -> i32 {
+        match self {
+            SortMode::Status => 0,
+            SortMode::Time => 1,
+        }
+    }
+
+    pub fn from_index(index: i32) -> SortMode {
+        match index {
+            1 => SortMode::Time,
+            _ => SortMode::Status,
+        }
+    }
+}
+
 /// 解析 "HH:MM" 为当天分钟数（0..=1439），非法返回 None。
 fn parse_hhmm(text: &str) -> Option<u32> {
     let (hour, minute) = text.trim().split_once(':')?;
@@ -189,6 +219,9 @@ pub struct Settings {
     /// 回收站保留天数，超过后自动彻底删除；1-365。
     #[serde(default = "default_trash_keep_days")]
     pub trash_keep_days: u32,
+    /// 列表排列方式：按状态分组 / 按时间分档。
+    #[serde(default)]
+    pub sort_mode: SortMode,
 }
 
 impl Default for Settings {
@@ -204,6 +237,7 @@ impl Default for Settings {
             dnd_mode: DndMode::default(),
             close_to_tray: true,
             trash_keep_days: DEFAULT_TRASH_KEEP_DAYS,
+            sort_mode: SortMode::Status,
         }
     }
 }
@@ -255,6 +289,7 @@ mod tests {
         let loaded = load_settings(&path);
         assert_eq!(loaded.theme, ThemeMode::Dark);
         assert_eq!(loaded.repeat_minutes, DEFAULT_REPEAT_MINUTES);
+        assert_eq!(loaded.sort_mode, SortMode::Status, "老设置里没有排列方式，应按状态分组");
         assert!(loaded.hotkey_enabled, "老设置里没有快捷键开关，应默认开启");
         assert!(!loaded.dnd_enabled, "老设置里没有勿扰配置，应默认关闭");
         assert_eq!(loaded.dnd_start, "22:00");
@@ -284,6 +319,7 @@ mod tests {
                 dnd_mode: DndMode::Silent,
                 close_to_tray: false,
                 trash_keep_days: 7,
+                sort_mode: SortMode::Time,
             },
         )
         .unwrap();
@@ -299,6 +335,7 @@ mod tests {
         assert_eq!(loaded.dnd_mode, DndMode::Silent);
         assert!(!loaded.close_to_tray);
         assert_eq!(loaded.trash_keep_days, 7);
+        assert_eq!(loaded.sort_mode, SortMode::Time);
         assert_eq!(clamp_trash_keep_days(0), 1, "低于下限要夹回 1");
         assert_eq!(clamp_trash_keep_days(999), TRASH_KEEP_DAYS_MAX, "高于上限要夹回 365");
         assert_eq!(clamp_trash_keep_days(30), 30);

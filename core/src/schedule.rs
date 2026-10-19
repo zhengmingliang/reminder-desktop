@@ -718,6 +718,26 @@ pub struct RecordEntry {
     pub kind: String,
 }
 
+/// 列表「按时间」排列时的分组：待触发的按下次触发时间分今天 / 明天 / 本周（2-7 天）/ 更远，
+/// 已停用、已触发未确认、已完成的各归一组。分组标识和「按状态」那套共用。
+pub fn time_bucket(reminder: &Reminder, now: DateTime<Local>) -> &'static str {
+    if !reminder.enabled {
+        return "paused";
+    }
+    if reminder.status == Status::Fired {
+        return if reminder.acknowledged_at_ms.is_some() { "done" } else { "fired" };
+    }
+    let Some(next) = next_wake(std::slice::from_ref(reminder), now) else {
+        return "later";
+    };
+    match (next.date_naive() - now.date_naive()).num_days() {
+        ..=0 => "today",
+        1 => "tomorrow",
+        2..=7 => "week",
+        _ => "later",
+    }
+}
+
 /// 用每条提醒的最近一次触发时间拼出最近记录，最多 4 条。
 pub fn recent_records(reminders: &[Reminder], now: DateTime<Local>) -> Vec<RecordEntry> {
     let mut fired: Vec<RecordEntry> = Vec::new();
@@ -792,6 +812,35 @@ mod tests {
             acknowledged_at_ms: None,
             deleted_at_ms: None,
         }
+    }
+
+    /// 「按时间」排列时的分档：今天 / 明天 / 本周 / 更远，停用与已完成各归一组。
+    #[test]
+    fn time_bucket_splits_by_next_occurrence() {
+        let now = fixed(2026, 10, 20, 10, 0, 0);
+        let at = |day: u32, hour: u32| {
+            sample(
+                Schedule::At { fire_at_ms: fixed(2026, 10, day, hour, 0, 0).timestamp_millis() },
+                true,
+                Status::Pending,
+            )
+        };
+
+        assert_eq!(time_bucket(&at(20, 23), now), "today", "当天还没到的算今天");
+        assert_eq!(time_bucket(&at(21, 9), now), "tomorrow", "隔一天是明天");
+        assert_eq!(time_bucket(&at(23, 9), now), "week", "3 天后算本周");
+        assert_eq!(time_bucket(&at(27, 9), now), "week", "正好 7 天仍算本周");
+        assert_eq!(time_bucket(&at(28, 9), now), "later", "超过 7 天算更远");
+
+        let mut paused = at(20, 23);
+        paused.enabled = false;
+        assert_eq!(time_bucket(&paused, now), "paused", "停用不看时间");
+
+        let mut fired = at(20, 9);
+        fired.status = Status::Fired;
+        assert_eq!(time_bucket(&fired, now), "fired", "触发了没确认是待处理");
+        fired.acknowledged_at_ms = Some(now.timestamp_millis());
+        assert_eq!(time_bucket(&fired, now), "done", "确认过的算已完成");
     }
 
     /// 一次性提醒触发后：点过「知道了」是已完成，直接关掉弹窗的只算已触发。

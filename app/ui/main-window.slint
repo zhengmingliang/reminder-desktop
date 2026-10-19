@@ -20,6 +20,12 @@ export struct ReminderRow {
     sound-on: bool,
     is-last-in-group: bool,
     deleted-at-text: string,
+    // 分组由 Rust 侧算好：当前排列方式下的分组标识、标题、该组条数、是否组内首行。
+    // 回收站不分组，group 为空字符串，UI 也就不画分组标题。
+    group: string,
+    group-label: string,
+    group-count: string,
+    group-first: bool,
 }
 
 export struct DirEntry {
@@ -642,6 +648,8 @@ export component MainWindow inherits Window {
     in-out property <int> selected-count: 0;
     in-out property <string> trash-count: "0";
     in-out property <int> trash-days: 30;
+    // 列表排列方式：0 按状态分组 / 1 按时间分档；持久化在 settings.json。
+    in-out property <int> sort-mode: 0;
     // 数据与日志：日志展开开关、日志尾部文本、打开目录的结果提示。
     in-out property <bool> log-open: false;
     in-out property <string> log-text: "";
@@ -703,6 +711,7 @@ export component MainWindow inherits Window {
     callback trash-purge-selected();
     callback trash-empty();
     callback trash-days-changed(float);
+    callback sort-mode-changed(int);
     callback close-requested();
     callback restore-backup(int);
     callback check-update();
@@ -1109,6 +1118,19 @@ export component MainWindow inherits Window {
                                             }
                                         }
                                     }
+                                    // 排列方式：按状态分组（即将触发 / 已触发 / 已完成 / 已停用），
+                                    // 或按时间分档（今天 / 明天 / 本周 / 更远）。
+                                    Chip {
+                                        pill: true;
+                                        chip-height: 28px;
+                                        pad-x: 10px;
+                                        font-size: 12px;
+                                        label: root.sort-mode == 0 ? "按状态" : "按时间";
+                                        active: root.sort-mode != 0;
+                                        clicked => {
+                                            root.sort-mode-changed(root.sort-mode == 0 ? 1 : 0);
+                                        }
+                                    }
                                     // 多选入口：进入后每行出现复选框，列表上方浮出批量操作条。
                                     Chip {
                                         pill: true;
@@ -1231,6 +1253,32 @@ export component MainWindow inherits Window {
 
                                     // 分组标题始终全部显示：点一下只保留该组，再点一下恢复全部，
                                     // 否则过滤后其它分组标题一起消失，就没法回到全部了。
+                                    for row[index] in root.rows : VerticalLayout {
+                                        if row.group-first && row.group-label != "" : GroupHeader {
+                                            first: index == 0;
+                                            label: row.group-label;
+                                            count: row.group-count;
+                                            active: root.list-filter == row.group;
+                                            clicked => {
+                                                root.list-filter = root.list-filter == row.group ? "all" : row.group;
+                                                root.filter-changed(root.list-filter);
+                                            }
+                                        }
+                                        ReminderItem {
+                                            mono-family: root.mono-font;
+                                            select-mode: root.select-mode;
+                                            trash-mode: root.trash-mode;
+                                            item: row;
+                                            picked(id) => {
+                                                root.select-reminder(id);
+                                                root.main-view = "edit";
+                                            }
+                                            check-toggled(id) => { root.check-toggled(id); }
+                                            multi-picked(id, ctrl, shift) => { root.multi-picked(id, ctrl, shift); }
+                                            trash-restore(id) => { root.trash-restore(id); }
+                                            trash-purge(id) => { root.trash-purge(id); }
+                                        }
+                                    }
                                     if root.tab-pending != "0" && !root.trash-mode : GroupHeader {
                                         first: true;
                                         label: "即将触发";

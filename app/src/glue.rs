@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -12,7 +12,7 @@ use reminder_core::validate::{arm_snooze, clear_skip, skip_next_occurrence};
 use reminder_core::{
     check_sound_file, clamp_trash_keep_days, format_point, in_quiet_hours, inspect, millis_to_local,
     load_settings, save_settings, settings_path, valid_hhmm, DndMode, Draft, Kind, Reminder, Report,
-    Schedule, Status, Store, ThemeMode, DEFAULT_TRASH_KEEP_DAYS,
+    Schedule, SortMode, Status, Store, ThemeMode, DEFAULT_TRASH_KEEP_DAYS,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
@@ -113,6 +113,8 @@ struct Session {
     pending_batch_ids: RefCell<Vec<String>>,
     /// 等确认的彻底删除条目 id。
     pending_purge: RefCell<Option<String>>,
+    /// 列表排列方式：按状态分组 / 按时间分档。持久化在 settings.json。
+    sort_mode: Cell<SortMode>,
 }
 
 pub fn run(smoke: bool) -> Result<(), String> {
@@ -231,6 +233,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
         last_cleanup_day: RefCell::new(String::new()),
         pending_batch_ids: RefCell::new(Vec::new()),
         pending_purge: RefCell::new(None),
+        sort_mode: Cell::new(settings.sort_mode),
     });
 
     if let Some(reason) = lock_store(&store).persist_block_reason().map(str::to_string) {
@@ -251,6 +254,9 @@ pub fn run(smoke: bool) -> Result<(), String> {
 
     // 关闭按钮行为开关：回显到设置面板。
     ui.set_close_to_tray_on(settings.close_to_tray);
+
+    // 列表排列方式：回显到列表顶部的排列切换。
+    ui.set_sort_mode(settings.sort_mode.as_index());
 
     // 回收站保留期：回显到设置面板，并按当天日期先跑一次过期清理。
     ui.set_trash_days(i32::try_from(settings.trash_keep_days).unwrap_or(DEFAULT_TRASH_KEEP_DAYS as i32));
@@ -498,6 +504,10 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {
     ui.on_trash_days_changed({
         let session = session.clone();
         move |days| session.set_trash_days(days)
+    });
+    ui.on_sort_mode_changed({
+        let session = session.clone();
+        move |index| session.set_sort_mode(index)
     });
     ui.on_skip_next({
         let session = session.clone();
@@ -1145,6 +1155,26 @@ impl Session {
         self.exit_multi();
         self.refresh_list();
         self.toast(&format!("已移入回收站（{deleted} 条）"));
+    }
+
+    /// 切换列表排列方式。分组标识跟着变，原来按某个分组筛选的条件先清掉，
+    /// 否则「按状态」的 pending 之类的条件在新分组里一条都匹配不上，列表会空着。
+    fn set_sort_mode(&self, index: i32) {
+        let mode = SortMode::from_index(index);
+        self.sort_mode.set(mode);
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_sort_mode(mode.as_index());
+            ui.set_list_filter("all".into());
+        }
+        let path = settings_path(&self.data_dir);
+        let mut settings = load_settings(&path);
+        settings.sort_mode = mode;
+        if let Err(error) = save_settings(&path, &settings) {
+            self.log.log("ERROR", &format!("排列方式保存失败：{error}"));
+            self.toast("排列方式未能保存");
+        } else {
+            self.refresh_list();
+        }
     }
 
     /// 回收站保留期：夹到 1-365 后存进 settings.json。
@@ -2287,21 +2317,34 @@ impl Session {
                         sound_on: false,
                         is_last_in_group: true,
                         deleted_at_text: deleted_at_text.into(),
+                        // 回收站不分组，行里不带分组标题。
+                        group: String::new().into(),
+                        group_label: String::new().into(),
+                        group_count: String::new().into(),
+                        group_first: false,
                     }
                 })
                 .collect()
         } else {
+            let by_time = self.sort_mode.get() == SortMode::Time;
             let mut items: Vec<&Reminder> = active
                 .iter()
-                .filter(|item| filter == "all" || bucket(item) == filter)
+                .filter(|item| filter == "all" || group_key(item, by_time, now) == filter)
                 .filter(|item| search.is_empty() || contains_query(item, &search))
                 .collect();
             items.sort_by(|left, right| {
-                rank(left)
-                    .cmp(&rank(right))
-                    .then(next_millis(left, now).cmp(&next_millis(right, now)))
+                group_rank(group_key(left, by_time, now), by_time)
+                    .cmp(&group_rank(group_key(right, by_time, now), by_time))
+                    .then(order_within(left, right, now))
                     .then(left.title.cmp(&right.title))
             });
+            // 分组标题与计数按当前排列方式现算：每组条数是真实行数，不会和标题上的数字对不上。
+            let keys: Vec<&'static str> = items.iter().map(|item| group_key(item, by_time, now)).collect();
+            let mut counts: HashMap<&str, usize> = HashMap::new();
+            for key in &keys {
+                *counts.entry(key).or_default() += 1;
+            }
+            let mut seen: HashSet<&str> = HashSet::new();
             let selected = self.selected.borrow().clone();
             items
                 .iter()
@@ -2323,9 +2366,17 @@ impl Session {
                         sound_on: item.sound_enabled,
                         is_last_in_group: items
                             .get(index + 1)
-                            .map(|next| bucket(next) != bucket(item))
+                            .map(|next| group_key(next, by_time, now) != keys[index])
                             .unwrap_or(true),
                         deleted_at_text: String::new().into(),
+                        group: keys[index].into(),
+                        group_label: group_label(keys[index], by_time).into(),
+                        group_count: counts
+                            .get(keys[index])
+                            .map(|count| count.to_string())
+                            .unwrap_or_default()
+                            .into(),
+                        group_first: seen.insert(keys[index]),
                     }
                 })
                 .collect()
@@ -3313,13 +3364,72 @@ fn bucket(reminder: &Reminder) -> &'static str {
     }
 }
 
-fn rank(reminder: &Reminder) -> u8 {
-    if reminder.status == Status::Fired {
-        2
-    } else if !reminder.enabled {
-        1
+/// 当前排列方式下这一条属于哪个分组。分档规则在 core 里，那边有单元测试。
+fn group_key(reminder: &Reminder, by_time: bool, now: chrono::DateTime<Local>) -> &'static str {
+    if by_time {
+        reminder_core::time_bucket(reminder, now)
     } else {
-        0
+        bucket(reminder)
+    }
+}
+
+fn group_label(key: &str, by_time: bool) -> &'static str {
+    if by_time {
+        match key {
+            "fired" => "待处理",
+            "today" => "今天",
+            "tomorrow" => "明天",
+            "week" => "本周",
+            "later" => "更远",
+            "paused" => "已停用",
+            "done" => "已完成",
+            _ => "",
+        }
+    } else {
+        match key {
+            "pending" => "即将触发",
+            "fired" => "今天已触发",
+            "done" => "今天已完成",
+            "paused" => "已停用",
+            _ => "",
+        }
+    }
+}
+
+/// 分组在列表里的先后。两套排列方式共用一套标识，顺序各算各的。
+fn group_rank(key: &str, by_time: bool) -> u8 {
+    if by_time {
+        match key {
+            "fired" => 0,
+            "today" => 1,
+            "tomorrow" => 2,
+            "week" => 3,
+            "later" => 4,
+            "paused" => 5,
+            "done" => 6,
+            _ => 7,
+        }
+    } else {
+        match key {
+            "pending" => 0,
+            "fired" => 1,
+            "done" => 2,
+            "paused" => 3,
+            _ => 4,
+        }
+    }
+}
+
+/// 同一分组内的先后：已经触发过的按触发时间倒序（最近的在前），其余按下次触发时间正序。
+fn order_within(
+    left: &Reminder,
+    right: &Reminder,
+    now: chrono::DateTime<Local>,
+) -> std::cmp::Ordering {
+    if left.status == Status::Fired && right.status == Status::Fired {
+        right.last_fired_at_ms.unwrap_or(0).cmp(&left.last_fired_at_ms.unwrap_or(0))
+    } else {
+        next_millis(left, now).cmp(&next_millis(right, now))
     }
 }
 
