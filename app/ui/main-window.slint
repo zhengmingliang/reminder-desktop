@@ -493,6 +493,8 @@ export component MainWindow inherits Window {
     in-out property <string> form-date: "";
     in-out property <string> form-time: "";
     in-out property <string> form-cron: "";
+    in-out property <string> form-cron-end: "";
+    in-out property <string> form-cron-max: "";
     in-out property <string> title-count: "0/40";
     in-out property <string> body-count: "0/200";
     in-out property <string> title-error: "";
@@ -503,6 +505,8 @@ export component MainWindow inherits Window {
     in-out property <string> time-error: "";
     in-out property <string> at-hint: "";
     in-out property <string> cron-error: "";
+    in-out property <string> cron-end-error: "";
+    in-out property <string> cron-max-error: "";
     in-out property <string> form-error: "";
     in-out property <[PreviewLine]> preview-lines: [];
     in-out property <[TimelineRow]> timeline: [];
@@ -2009,6 +2013,62 @@ export component MainWindow inherits Window {
                                                 }
                                                 if root.cron-error != "" : ErrorText {
                                                     text: root.cron-error;
+                                                }
+                                                HorizontalLayout {
+                                                    spacing: 12px;
+                                                    VerticalLayout {
+                                                        horizontal-stretch: 1;
+                                                        spacing: 6px;
+                                                        Text {
+                                                            text: "结束日期（留空一直循环）";
+                                                            font-size: 13px;
+                                                            font-weight: 500;
+                                                            color: Theme.text2;
+                                                        }
+                                                        Field {
+                                                            width: 100%;
+                                                            mono: true;
+                                                            mono-family: root.mono-font;
+                                                            font-size: 13px;
+                                                            invalid: root.cron-end-error != "";
+                                                            placeholder: "YYYY-MM-DD";
+                                                            text <=> root.form-cron-end;
+                                                            edited(t) => {
+                                                                root.dirty = true;
+                                                                root.draft-edited();
+                                                            }
+                                                        }
+                                                    }
+                                                    VerticalLayout {
+                                                        width: 160px;
+                                                        horizontal-stretch: 0;
+                                                        spacing: 6px;
+                                                        Text {
+                                                            text: "最多触发次数（留空不限）";
+                                                            font-size: 13px;
+                                                            font-weight: 500;
+                                                            color: Theme.text2;
+                                                        }
+                                                        Field {
+                                                            width: 100%;
+                                                            mono: true;
+                                                            mono-family: root.mono-font;
+                                                            font-size: 13px;
+                                                            invalid: root.cron-max-error != "";
+                                                            placeholder: "如 10";
+                                                            text <=> root.form-cron-max;
+                                                            edited(t) => {
+                                                                root.dirty = true;
+                                                                root.draft-edited();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                if root.cron-end-error != "" : ErrorText {
+                                                    text: root.cron-end-error;
+                                                }
+                                                if root.cron-max-error != "" : ErrorText {
+                                                    text: root.cron-max-error;
                                                 }
                                                 Rectangle {
                                                     border-radius: 6px;

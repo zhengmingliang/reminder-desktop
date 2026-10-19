@@ -425,7 +425,7 @@ mod tests {
         store.upsert(reminder).unwrap();
         let loaded = Store::open(path);
         match &loaded.reminders[0].schedule {
-            Schedule::Cron { expression } => assert_eq!(expression, "0 18 * * 1-5"),
+            Schedule::Cron { expression, .. } => assert_eq!(expression, "0 18 * * 1-5"),
             other => panic!("unexpected {other:?}"),
         }
     }

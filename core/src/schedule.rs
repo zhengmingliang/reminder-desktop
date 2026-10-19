@@ -67,6 +67,37 @@ pub fn due_reminders(reminders: &[Reminder], now: DateTime<Local>) -> Vec<DueHit
     hits
 }
 
+/// Cron 是否已结束：超过结束日期，或已触发次数达到上限。
+fn cron_finished(reminder: &Reminder, end_date_ms: Option<i64>, max_occurrences: Option<u32>) -> bool {
+    if let Some(max) = max_occurrences {
+        if reminder.occurrence_count >= max {
+            return true;
+        }
+    }
+    if let Some(end_ms) = end_date_ms {
+        if let Some(next_ms) = next_cron_ms(reminder) {
+            if next_ms > end_ms {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Cron 下一次触发点（毫秒）。
+fn next_cron_ms(reminder: &Reminder) -> Option<i64> {
+    let Schedule::Cron { expression, .. } = &reminder.schedule else {
+        return None;
+    };
+    let cron = parse_cron(expression).ok()?;
+    let origin_ms = reminder
+        .last_occurrence_ms
+        .unwrap_or(reminder.created_at_ms);
+    cron.find_next_occurrence(&millis_to_local(origin_ms), false)
+        .ok()
+        .map(|time| time.timestamp_millis())
+}
+
 /// 下一次触发点（毫秒）。暂停、稍后期间或已完成的一次性提醒返回 None。
 pub fn next_occurrence_ms(reminder: &Reminder) -> Option<i64> {
     if !reminder.enabled || reminder.snooze_until_ms.is_some() {
@@ -78,14 +109,15 @@ pub fn next_occurrence_ms(reminder: &Reminder) -> Option<i64> {
         {
             Some(*fire_at_ms)
         }
-        Schedule::Cron { expression } if reminder.status != Status::Fired => {
-            let cron = parse_cron(expression).ok()?;
-            let origin_ms = reminder
-                .last_occurrence_ms
-                .unwrap_or(reminder.created_at_ms);
-            cron.find_next_occurrence(&millis_to_local(origin_ms), false)
-                .ok()
-                .map(|time| time.timestamp_millis())
+        Schedule::Cron {
+            end_date_ms,
+            max_occurrences,
+            ..
+        } if reminder.status != Status::Fired => {
+            if cron_finished(reminder, *end_date_ms, *max_occurrences) {
+                return None;
+            }
+            next_cron_ms(reminder)
         }
         _ => None,
     }
@@ -148,9 +180,18 @@ fn due_one(reminder: &Reminder, now: DateTime<Local>) -> Option<DueHit> {
                 snooze: false,
             })
         }
-        Schedule::Cron { expression } => {
+        Schedule::Cron {
+            expression,
+            end_date_ms,
+            max_occurrences,
+        } => {
             if reminder.status == Status::Fired {
                 return None;
+            }
+            if let Some(max) = max_occurrences {
+                if reminder.occurrence_count >= *max {
+                    return None;
+                }
             }
             let cron = parse_cron(expression).ok()?;
             let origin_ms = reminder
@@ -158,6 +199,12 @@ fn due_one(reminder: &Reminder, now: DateTime<Local>) -> Option<DueHit> {
                 .unwrap_or(reminder.created_at_ms);
             let (latest, missed) = latest_cron_hit(&cron, millis_to_local(origin_ms), now)?;
             let occurrence_ms = latest.timestamp_millis();
+            // 结束日期之后的触发点不再弹。
+            if let Some(end_ms) = end_date_ms {
+                if occurrence_ms > *end_ms {
+                    return None;
+                }
+            }
             Some(DueHit {
                 id: reminder.id.clone(),
                 occurrence_ms,
@@ -248,14 +295,8 @@ pub fn next_wake(reminders: &[Reminder], now: DateTime<Local>) -> Option<DateTim
             {
                 Some(millis_to_local(*fire_at_ms))
             }
-            Schedule::Cron { expression } if reminder.status != Status::Fired => {
-                let Ok(cron) = parse_cron(expression) else {
-                    continue;
-                };
-                let origin_ms = reminder
-                    .last_occurrence_ms
-                    .unwrap_or(reminder.created_at_ms);
-                cron.find_next_occurrence(&millis_to_local(origin_ms), false).ok()
+            Schedule::Cron { .. } if reminder.status != Status::Fired => {
+                next_occurrence_ms(reminder).map(millis_to_local)
             }
             _ => None,
         };
@@ -303,7 +344,7 @@ pub fn list_texts(reminder: &Reminder, now: DateTime<Local>) -> ListText {
         Schedule::At { fire_at_ms } => {
             format!("指定时间 · {}", format_point(millis_to_local(*fire_at_ms), now, false))
         }
-        Schedule::Cron { expression } => {
+        Schedule::Cron { expression, .. } => {
             let shown = if expression.chars().count() > 28 {
                 format!("{}…", expression.chars().take(28).collect::<String>())
             } else {
@@ -357,14 +398,8 @@ pub fn list_texts(reminder: &Reminder, now: DateTime<Local>) -> ListText {
                 Schedule::Delay { fire_at_ms, .. } | Schedule::At { fire_at_ms } => {
                     Some(millis_to_local(*fire_at_ms))
                 }
-                Schedule::Cron { expression } => {
-                    let next = parse_cron(expression).ok().and_then(|cron| {
-                        let origin_ms = reminder
-                            .last_occurrence_ms
-                            .unwrap_or(reminder.created_at_ms);
-                        cron.find_next_occurrence(&millis_to_local(origin_ms), false).ok()
-                    });
-                    next
+                Schedule::Cron { .. } => {
+                    next_occurrence_ms(reminder).map(millis_to_local)
                 }
             }
         };
@@ -393,15 +428,9 @@ fn next_fire_display(reminder: &Reminder, now: DateTime<Local>) -> Option<String
             Some(format_point(millis_to_local(*fire_at_ms), now, true))
         }
         Schedule::At { fire_at_ms } => Some(format_point(millis_to_local(*fire_at_ms), now, false)),
-        Schedule::Cron { expression } => {
-            let cron = parse_cron(expression).ok()?;
-            let origin_ms = reminder
-                .last_occurrence_ms
-                .unwrap_or(reminder.created_at_ms);
-            let next = cron
-                .find_next_occurrence(&millis_to_local(origin_ms), false)
-                .ok()?;
-            Some(format_point(next, now, false))
+        Schedule::Cron { .. } => {
+            let next = next_occurrence_ms(reminder)?;
+            Some(format_point(millis_to_local(next), now, false))
         }
     }
 }
@@ -527,7 +556,7 @@ pub fn today_timeline(reminders: &[Reminder], now: DateTime<Local>) -> Vec<Timel
                 };
                 push(*fire_at_ms, kind, status);
             }
-            Schedule::Cron { expression } => {
+            Schedule::Cron { expression, .. } => {
                 if !cron_cache.contains_key(expression.as_str()) {
                     match parse_cron(expression) {
                         Ok(parsed) => {
@@ -685,6 +714,7 @@ mod tests {
             snooze_count: 0,
             early_minutes: 0,
             early_notice_sent_ms: None,
+            occurrence_count: 0,
         }
     }
 
@@ -725,7 +755,7 @@ mod tests {
     fn cron_fires_once_and_collapses_missed_slots() {
         let now = fixed(2026, 10, 17, 12, 0, 10);
         let mut reminder = sample(
-            Schedule::Cron { expression: "0 * * * *".into() },
+            Schedule::Cron { expression: "0 * * * *".into(), end_date_ms: None, max_occurrences: None },
             true,
             Status::Recurring,
         );
@@ -746,7 +776,7 @@ mod tests {
     fn fresh_cron_does_not_backfill_before_save() {
         let now = fixed(2026, 10, 17, 12, 30, 0);
         let mut reminder = sample(
-            Schedule::Cron { expression: "* * * * *".into() },
+            Schedule::Cron { expression: "* * * * *".into(), end_date_ms: None, max_occurrences: None },
             true,
             Status::Recurring,
         );
@@ -781,7 +811,7 @@ mod tests {
     fn snoozed_cron_does_not_dump_missed_slots() {
         let now = fixed(2026, 10, 17, 12, 0, 0);
         let mut reminder = sample(
-            Schedule::Cron { expression: "0 * * * *".into() },
+            Schedule::Cron { expression: "0 * * * *".into(), end_date_ms: None, max_occurrences: None },
             true,
             Status::Recurring,
         );
@@ -820,7 +850,7 @@ mod tests {
         let origin = fixed(2026, 10, 10, 9, 0, 0);
         let now = origin + Duration::days(5);
         let mut reminder = sample(
-            Schedule::Cron { expression: "* * * * *".into() },
+            Schedule::Cron { expression: "* * * * *".into(), end_date_ms: None, max_occurrences: None },
             true,
             Status::Recurring,
         );
@@ -913,7 +943,7 @@ mod tests {
     fn early_uses_the_next_cron_occurrence() {
         let origin = fixed(2026, 10, 17, 11, 0, 0);
         let mut reminder = sample(
-            Schedule::Cron { expression: "0 * * * *".into() },
+            Schedule::Cron { expression: "0 * * * *".into(), end_date_ms: None, max_occurrences: None },
             true,
             Status::Recurring,
         );
@@ -928,6 +958,50 @@ mod tests {
         assert_eq!((occurrence.hour(), occurrence.minute()), (12, 0));
         crate::validate::mark_early_sent(&mut reminder, hits[0].occurrence_ms, origin);
         assert!(early_reminders(std::slice::from_ref(&reminder), fixed(2026, 10, 17, 11, 55, 0)).is_empty());
+    }
+
+    #[test]
+    fn cron_stops_after_end_date_and_max_occurrences() {
+        let origin = fixed(2026, 10, 17, 8, 0, 0);
+        let mut reminder = sample(
+            Schedule::Cron {
+                expression: "0 * * * *".into(),
+                end_date_ms: Some(now_ms(fixed(2026, 10, 17, 12, 0, 0))),
+                max_occurrences: None,
+            },
+            true,
+            Status::Recurring,
+        );
+        reminder.created_at_ms = now_ms(origin);
+        reminder.last_occurrence_ms = Some(now_ms(origin));
+        // 11:00 的触发点在结束日期前，正常弹。
+        let hits = due_reminders(std::slice::from_ref(&reminder), fixed(2026, 10, 17, 11, 0, 10));
+        assert_eq!(hits.len(), 1);
+        // 13:00 再看：最近一次触发点 13:00 已过结束时间 12:00，不弹。
+        assert!(due_reminders(std::slice::from_ref(&reminder), fixed(2026, 10, 17, 13, 0, 10)).is_empty());
+        // 把已处理的触发点推进到 13:00 后，next_occurrence 应返回 None（下一个 14:00 超过结束日期）。
+        reminder.last_occurrence_ms = Some(now_ms(fixed(2026, 10, 17, 13, 0, 0)));
+        assert_eq!(next_occurrence_ms(&reminder), None, "下一个整点 14:00 超过结束日期");
+
+        // 次数限制：已触发 3 次、上限 3 次后不再弹。
+        let mut capped = sample(
+            Schedule::Cron {
+                expression: "0 * * * *".into(),
+                end_date_ms: None,
+                max_occurrences: Some(3),
+            },
+            true,
+            Status::Recurring,
+        );
+        capped.created_at_ms = now_ms(origin);
+        capped.last_occurrence_ms = Some(now_ms(origin));
+        capped.occurrence_count = 2;
+        let later = fixed(2026, 10, 17, 9, 0, 10);
+        assert_eq!(due_reminders(std::slice::from_ref(&capped), later).len(), 1);
+        crate::validate::apply_fire(&mut capped, now_ms(fixed(2026, 10, 17, 9, 0, 0)), later);
+        assert_eq!(capped.occurrence_count, 3);
+        assert!(due_reminders(std::slice::from_ref(&capped), fixed(2026, 10, 17, 10, 0, 10)).is_empty());
+        assert_eq!(next_occurrence_ms(&capped), None);
     }
 
     #[test]
@@ -987,12 +1061,12 @@ mod tests {
             // 贴近真实使用：多数是一次性提醒，少量每小时 Cron，极少数每分钟 Cron。
             let mut reminder = match i % 10 {
                 0 => sample(
-                    Schedule::Cron { expression: "* * * * *".into() },
+                    Schedule::Cron { expression: "* * * * *".into(), end_date_ms: None, max_occurrences: None },
                     true,
                     Status::Recurring,
                 ),
                 1..=3 => sample(
-                    Schedule::Cron { expression: "0 * * * *".into() },
+                    Schedule::Cron { expression: "0 * * * *".into(), end_date_ms: None, max_occurrences: None },
                     true,
                     Status::Recurring,
                 ),

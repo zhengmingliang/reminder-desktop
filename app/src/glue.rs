@@ -611,6 +611,8 @@ impl Session {
         ui.set_form_date(draft.date.clone().into());
         ui.set_form_time(draft.time.clone().into());
         ui.set_form_cron(draft.cron.clone().into());
+        ui.set_form_cron_end(draft.cron_end.clone().into());
+        ui.set_form_cron_max(draft.cron_max.clone().into());
         ui.set_form_sound(draft.sound_enabled);
         ui.set_form_enabled(draft.enabled);
         ui.set_form_early(draft.early_minutes);
@@ -638,6 +640,8 @@ impl Session {
             date: ui.get_form_date().to_string(),
             time: ui.get_form_time().to_string(),
             cron: ui.get_form_cron().to_string(),
+            cron_end: ui.get_form_cron_end().to_string(),
+            cron_max: ui.get_form_cron_max().to_string(),
             sound_enabled: ui.get_form_sound(),
             sound_path: self.sound_path.borrow().clone(),
             enabled: ui.get_form_enabled(),
@@ -2136,6 +2140,8 @@ fn show_report(ui: &MainWindow, report: &Report) {
     ui.set_date_error(field(report, "date").into());
     ui.set_time_error(field(report, "time").into());
     ui.set_cron_error(field(report, "cron").into());
+    ui.set_cron_end_error(field(report, "cron_end").into());
+    ui.set_cron_max_error(field(report, "cron_max").into());
     ui.set_sound_error(field(report, "sound").into());
     ui.set_form_error(field(report, "form").into());
     ui.set_delay_hint(report.delay_hint.clone().into());
@@ -2232,7 +2238,7 @@ fn contains_query(reminder: &Reminder, query: &str) -> bool {
     reminder.title.to_lowercase().contains(query)
         || reminder.body.to_lowercase().contains(query)
         || match &reminder.schedule {
-            reminder_core::Schedule::Cron { expression } => expression.to_lowercase().contains(query),
+            reminder_core::Schedule::Cron { expression, .. } => expression.to_lowercase().contains(query),
             _ => false,
         }
 }

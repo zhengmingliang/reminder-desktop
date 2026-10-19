@@ -68,6 +68,6 @@ fn summarize(reminder: &Reminder) -> String {
         Schedule::At { fire_at_ms } => {
             format!("{}", millis_to_local(*fire_at_ms).format("%Y-%m-%d %H:%M"))
         }
-        Schedule::Cron { expression } => format!("Cron {expression}"),
+        Schedule::Cron { expression, .. } => format!("Cron {expression}"),
     }
 }

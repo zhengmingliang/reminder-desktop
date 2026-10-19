@@ -13,7 +13,15 @@ pub const REMINDER_CAP: usize = 5_000;
 pub enum Schedule {
     Delay { minutes: u32, fire_at_ms: i64 },
     At { fire_at_ms: i64 },
-    Cron { expression: String },
+    Cron {
+        expression: String,
+        /// 结束日期（毫秒）。到这个日期之后不再触发；None 表示一直循环。
+        #[serde(default)]
+        end_date_ms: Option<i64>,
+        /// 最多触发多少次；到次数后标记为已触发。None 表示不限次数。
+        #[serde(default)]
+        max_occurrences: Option<u32>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +73,10 @@ pub struct Draft {
     pub enabled: bool,
     /// 提前多少分钟先提示一次；0 表示不提前。
     pub early_minutes: i32,
+    /// Cron 结束日期（YYYY-MM-DD），空字符串表示不结束。
+    pub cron_end: String,
+    /// Cron 最多触发次数，空字符串表示不限。
+    pub cron_max: String,
 }
 
 impl Draft {
@@ -83,6 +95,8 @@ impl Draft {
             sound_path: String::new(),
             enabled: true,
             early_minutes: 0,
+            cron_end: String::new(),
+            cron_max: String::new(),
         }
     }
 }
@@ -114,6 +128,9 @@ pub struct Reminder {
     /// 已经对哪个触发点（毫秒）发过提前提醒，避免同一个点重复弹。
     #[serde(default)]
     pub early_notice_sent_ms: Option<i64>,
+    /// Cron 已经触发的次数（用于 max_occurrences 判断）。
+    #[serde(default)]
+    pub occurrence_count: u32,
 }
 
 impl Reminder {
@@ -132,13 +149,26 @@ impl Reminder {
                     String::new(),
                 )
             }
-            Schedule::Cron { expression } => (
+            Schedule::Cron { expression, .. } => (
                 Kind::Cron,
                 String::new(),
                 String::new(),
                 String::new(),
                 expression.clone(),
             ),
+        };
+        let (cron_end, cron_max) = match &self.schedule {
+            Schedule::Cron {
+                end_date_ms,
+                max_occurrences,
+                ..
+            } => (
+                end_date_ms
+                    .map(|ms| millis_to_local(ms).format("%Y-%m-%d").to_string())
+                    .unwrap_or_default(),
+                max_occurrences.map(|n| n.to_string()).unwrap_or_default(),
+            ),
+            _ => (String::new(), String::new()),
         };
         Draft {
             id: Some(self.id.clone()),
@@ -154,6 +184,8 @@ impl Reminder {
             // 已触发的一次性提醒打开后默认勾选启用，直接保存就会重新开始。
             enabled: self.enabled || self.status == Status::Fired,
             early_minutes: i32::try_from(self.early_minutes).unwrap_or(0),
+            cron_end,
+            cron_max,
         }
     }
 }
@@ -193,5 +225,39 @@ mod tests {
         assert_eq!(reminder.early_minutes, 0);
         assert_eq!(reminder.early_notice_sent_ms, None);
         assert_eq!(reminder.to_draft().early_minutes, 0);
+    }
+
+    /// 老版本 Cron 没有 end_date_ms / max_occurrences / occurrence_count，读进来应是不限。
+    #[test]
+    fn older_cron_without_end_fields_defaults_to_unlimited() {
+        let raw = serde_json::json!({
+            "id": "b",
+            "title": "站会",
+            "body": "",
+            "schedule": {"kind": "cron", "expression": "0 9 * * 1-5"},
+            "sound_enabled": true,
+            "sound_path": null,
+            "enabled": true,
+            "status": "recurring",
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "last_fired_at_ms": null,
+            "last_occurrence_ms": null
+        });
+        let reminder: Reminder = serde_json::from_value(raw).unwrap();
+        match &reminder.schedule {
+            Schedule::Cron {
+                end_date_ms,
+                max_occurrences,
+                ..
+            } => {
+                assert_eq!(*end_date_ms, None);
+                assert_eq!(*max_occurrences, None);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(reminder.occurrence_count, 0);
+        assert_eq!(reminder.to_draft().cron_end, "");
+        assert_eq!(reminder.to_draft().cron_max, "");
     }
 }

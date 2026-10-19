@@ -80,18 +80,26 @@ pub fn inspect(draft: &Draft, now: DateTime<Local>) -> Report {
                 errors.push(err(field, message));
             }
         },
-        Kind::Cron => match next_cron_times(&draft.cron, now, 10) {
-            Ok(times) => {
-                if times.is_empty() {
-                    errors.push(err("cron", "未来 5 年内没有匹配的执行时间"));
+        Kind::Cron => {
+            match next_cron_times(&draft.cron, now, 10) {
+                Ok(times) => {
+                    if times.is_empty() {
+                        errors.push(err("cron", "未来 5 年内没有匹配的执行时间"));
+                    }
+                    preview = times
+                        .iter()
+                        .map(|time| crate::schedule::format_preview_line(*time, now.year()))
+                        .collect();
                 }
-                preview = times
-                    .iter()
-                    .map(|time| crate::schedule::format_preview_line(*time, now.year()))
-                    .collect();
+                Err(message) => errors.push(err("cron", message)),
             }
-            Err(message) => errors.push(err("cron", message)),
-        },
+            if let Err(message) = parse_cron_end(&draft.cron_end, now) {
+                errors.push(err("cron_end", message));
+            }
+            if let Err(message) = parse_cron_max(&draft.cron_max) {
+                errors.push(err("cron_max", message));
+            }
+        }
     }
 
     Report {
@@ -133,9 +141,15 @@ pub fn build_reminder(
             let fire = parse_at(&draft.date, &draft.time, now).expect("inspect 已通过");
             Schedule::At { fire_at_ms: fire.timestamp_millis() }
         }
-        Kind::Cron => Schedule::Cron {
-            expression: normalize_cron(&draft.cron),
-        },
+        Kind::Cron => {
+            let end_date_ms = parse_cron_end(&draft.cron_end, now).expect("inspect 已通过");
+            let max_occurrences = parse_cron_max(&draft.cron_max).expect("inspect 已通过");
+            Schedule::Cron {
+                expression: normalize_cron(&draft.cron),
+                end_date_ms,
+                max_occurrences,
+            }
+        }
     };
     let enabled = draft.enabled;
     let status = match (&schedule, enabled) {
@@ -146,6 +160,11 @@ pub fn build_reminder(
     let last_occurrence_ms = match &schedule {
         Schedule::Cron { .. } => Some(now_ms(now)),
         _ => None,
+    };
+    // 改了计划后次数重新计，避免旧次数把新计划立刻顶到上限。
+    let occurrence_count = match previous {
+        Some(item) if item.schedule == schedule => item.occurrence_count,
+        _ => 0,
     };
     Ok(Reminder {
         id: previous
@@ -170,6 +189,7 @@ pub fn build_reminder(
         // 提前提醒分钟数只是偏好，换触发时间后也继续沿用；发送记录跟着新计划重置。
         early_minutes: u32::try_from(draft.early_minutes.max(0)).unwrap_or(0),
         early_notice_sent_ms: None,
+        occurrence_count,
     })
 }
 
@@ -231,6 +251,7 @@ pub fn finish_snooze(reminder: &mut Reminder, now: DateTime<Local>) {
     match reminder.schedule {
         Schedule::Cron { .. } => {
             reminder.last_occurrence_ms = Some(now_ms(now));
+            reminder.occurrence_count = reminder.occurrence_count.saturating_add(1);
             reminder.status = Status::Recurring;
             reminder.enabled = true;
         }
@@ -248,6 +269,7 @@ pub fn apply_fire(reminder: &mut Reminder, occurrence_ms: i64, now: DateTime<Loc
     reminder.updated_at_ms = now_ms(now);
     match reminder.schedule {
         Schedule::Cron { .. } => {
+            reminder.occurrence_count = reminder.occurrence_count.saturating_add(1);
             reminder.status = Status::Recurring;
             reminder.enabled = true;
         }
@@ -369,6 +391,40 @@ fn canonicalize_time(text: &str) -> String {
         return text;
     }
     format!("{hour:0>2}:{minute:0>2}")
+}
+
+/// Cron 的结束日期：空表示不结束；否则解析 YYYY-MM-DD，取当天 23:59:59 作为最后触发时刻。
+pub fn parse_cron_end(text: &str, now: DateTime<Local>) -> Result<Option<i64>, String> {
+    let raw = text.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let date = NaiveDate::parse_from_str(&canonicalize_date(raw), "%Y-%m-%d")
+        .map_err(|_| format!("结束日期无效，请使用 YYYY-MM-DD，例如 {}", now.format("%Y-%m-%d")))?;
+    let local = date
+        .and_hms_opt(23, 59, 59)
+        .and_then(|dt| dt.and_local_timezone(Local).single())
+        .ok_or_else(|| "结束日期在当前时区不存在，请换一天".to_string())?;
+    if local <= now {
+        return Err("结束日期必须晚于当前时间".into());
+    }
+    Ok(Some(local.timestamp_millis()))
+}
+
+/// Cron 的最多触发次数：空表示不限。
+pub fn parse_cron_max(text: &str) -> Result<Option<u32>, String> {
+    let raw = text.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    if !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("次数必须是正整数".into());
+    }
+    let value: u32 = raw.parse().map_err(|_| "次数太大".to_string())?;
+    if value == 0 {
+        return Err("次数至少是 1".into());
+    }
+    Ok(Some(value))
 }
 
 pub fn normalize_cron(text: &str) -> String {
@@ -685,6 +741,46 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn cron_end_and_max_are_validated_and_roundtrip() {
+        let now = now();
+        // 结束日期：空合法；过去不合法；未来合法并取当天 23:59:59。
+        assert_eq!(parse_cron_end("", now).unwrap(), None);
+        assert!(parse_cron_end("2026-10-16", now).unwrap_err().contains("晚于"));
+        assert!(parse_cron_end("2026/10/20", now).is_ok());
+        assert!(parse_cron_end("2026-13-01", now).unwrap_err().contains("无效"));
+        // 次数：空合法；0 和非数字不合法。
+        assert_eq!(parse_cron_max("").unwrap(), None);
+        assert_eq!(parse_cron_max("3").unwrap(), Some(3));
+        assert!(parse_cron_max("0").unwrap_err().contains("至少"));
+        assert!(parse_cron_max("abc").unwrap_err().contains("正整数"));
+        // 走 build_reminder 完整构造并回读草稿。
+        let mut draft = draft();
+        draft.kind = Kind::Cron;
+        draft.cron = "0 9 * * *".into();
+        draft.cron_end = "2026-12-31".into();
+        draft.cron_max = "10".into();
+        let reminder = build_reminder(&draft, None, now, 0).unwrap();
+        match &reminder.schedule {
+            Schedule::Cron {
+                end_date_ms,
+                max_occurrences,
+                ..
+            } => {
+                assert!(end_date_ms.is_some());
+                assert_eq!(*max_occurrences, Some(10));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let back = reminder.to_draft();
+        assert_eq!(back.cron_end, "2026-12-31");
+        assert_eq!(back.cron_max, "10");
+        // 结束日期填过去的时间时 inspect 报错。
+        draft.cron_end = "2026-10-16".into();
+        let report = inspect(&draft, now);
+        assert!(report.errors.iter().any(|item| item.field == "cron_end"));
     }
 
     #[test]
