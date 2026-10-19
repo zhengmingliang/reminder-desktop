@@ -41,10 +41,13 @@ impl ThemeMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub theme: ThemeMode,
+    /// 更新清单地址；留空表示不做更新检查。
+    #[serde(default)]
+    pub update_url: String,
 }
 
 pub fn settings_path(data_dir: &Path) -> PathBuf {
@@ -88,8 +91,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = settings_path(&dir);
-        save_settings(&path, &Settings { theme: ThemeMode::Dark }).unwrap();
-        assert_eq!(load_settings(&path).theme, ThemeMode::Dark);
+        save_settings(
+            &path,
+            &Settings {
+                theme: ThemeMode::Dark,
+                update_url: "https://example.com/latest.json".into(),
+            },
+        )
+        .unwrap();
+        let loaded = load_settings(&path);
+        assert_eq!(loaded.theme, ThemeMode::Dark);
+        assert_eq!(loaded.update_url, "https://example.com/latest.json");
         // 临时文件不应残留。
         assert!(!path.with_extension("json.tmp").exists());
         assert_eq!(ThemeMode::from_index(2), ThemeMode::Dark);

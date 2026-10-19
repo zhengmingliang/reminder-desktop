@@ -6,10 +6,11 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Local, Offset, Timelike};
+use reminder_core::update::{is_newer, Manifest};
 use reminder_core::validate::arm_snooze;
 use reminder_core::{
     check_sound_file, format_point, inspect, millis_to_local, load_settings, save_settings,
-    settings_path, Draft, Kind, Reminder, Report, Settings, Status, Store, ThemeMode,
+    settings_path, Draft, Kind, Reminder, Report, Status, Store, ThemeMode,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
@@ -27,6 +28,17 @@ thread_local! {
 enum Nav {
     New,
     Select(String),
+}
+
+/// 后台更新线程回传的消息。
+enum UpdateMsg {
+    /// 检查完成：已确认是新版则带上清单。
+    Checked {
+        manual: bool,
+        outcome: Result<Option<Manifest>, String>,
+    },
+    /// 下载完成：成功给出落盘路径。
+    Downloaded(Result<PathBuf, String>),
 }
 
 struct PopupSlot {
@@ -64,6 +76,13 @@ struct Session {
     pending_restore: RefCell<Option<PathBuf>>,
     /// 主题模式（浅色 / 跟随系统 / 深色），持久化在 settings.json。
     theme_mode: Cell<ThemeMode>,
+    /// 已确认的新版本清单，等用户点「下载更新」。
+    pending_update: RefCell<Option<Manifest>>,
+    /// 后台更新任务的回传通道。
+    update_rx: RefCell<mpsc::Receiver<UpdateMsg>>,
+    update_tx: mpsc::Sender<UpdateMsg>,
+    /// 检查/下载进行中，避免重复触发。
+    update_busy: Cell<bool>,
 }
 
 pub fn run(smoke: bool) -> Result<(), String> {
@@ -121,6 +140,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
     ui.set_ui_font(ui_font().into());
     ui.set_mono_font(mono_font().into());
     ui.set_autostart_on(crate::autostart::is_enabled());
+    ui.set_version_text(format!("当前版本 v{}", env!("CARGO_PKG_VERSION")).into());
 
     let settings = load_settings(&settings_path(&data_dir));
     ui.set_theme_mode(settings.theme.as_index());
@@ -130,6 +150,8 @@ pub fn run(smoke: bool) -> Result<(), String> {
     let dirs = Rc::new(VecModel::<DirEntry>::default());
     ui.set_rows(rows.clone().into());
     ui.set_dir_entries(dirs.clone().into());
+
+    let (update_tx, update_rx) = mpsc::channel::<UpdateMsg>();
 
     let session = Rc::new(Session {
         ui: ui.as_weak(),
@@ -158,6 +180,10 @@ pub fn run(smoke: bool) -> Result<(), String> {
         backups: RefCell::new(Vec::new()),
         pending_restore: RefCell::new(None),
         theme_mode: Cell::new(settings.theme),
+        pending_update: RefCell::new(None),
+        update_rx: RefCell::new(update_rx),
+        update_tx,
+        update_busy: Cell::new(false),
     });
 
     if let Some(reason) = lock_store(&store).persist_block_reason().map(str::to_string) {
@@ -208,6 +234,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
         }
         timed.poll_show_request();
         timed.poll_add_requests();
+        timed.poll_updates();
         let batch: Vec<Vec<Notice>> = notice_rx_timer.borrow_mut().try_iter().collect();
         for notices in batch {
             timed.show_notices(notices);
@@ -251,6 +278,18 @@ pub fn run(smoke: bool) -> Result<(), String> {
         }
     });
 
+    // 更新检查：启动 6 秒后先自动查一次（避开启动高峰），之后每 6 小时查一次。
+    let update_first = slint::Timer::default();
+    let update_first_session = session.clone();
+    update_first.start(slint::TimerMode::SingleShot, Duration::from_secs(6), move || {
+        update_first_session.check_update(false);
+    });
+    let update_timer = slint::Timer::default();
+    let update_session = session.clone();
+    update_timer.start(slint::TimerMode::Repeated, Duration::from_secs(6 * 3600), move || {
+        update_session.check_update(false);
+    });
+
     slint::run_event_loop_until_quit().map_err(|error| format!("事件循环退出：{error}"))?;
     log.log("INFO", "退出");
     drop(lock);
@@ -258,6 +297,8 @@ pub fn run(smoke: bool) -> Result<(), String> {
     drop(smoke_timer);
     drop(center_timer);
     drop(theme_timer);
+    drop(update_first);
+    drop(update_timer);
     Ok(())
 }
 
@@ -316,6 +357,14 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_re
     ui.on_theme_changed({
         let session = session.clone();
         move |index| session.set_theme_mode(index)
+    });
+    ui.on_check_update({
+        let session = session.clone();
+        move || session.check_update(true)
+    });
+    ui.on_download_update({
+        let session = session.clone();
+        move || session.download_update()
     });
     ui.on_quit({
         let session = session.clone();
@@ -793,9 +842,151 @@ impl Session {
             apply_theme(&ui, mode);
         }
         let path = settings_path(&self.data_dir);
-        if let Err(error) = save_settings(&path, &Settings { theme: mode }) {
+        let mut settings = load_settings(&path);
+        settings.theme = mode;
+        if let Err(error) = save_settings(&path, &settings) {
             self.log.log("ERROR", &format!("主题设置保存失败：{error}"));
             self.toast("主题设置未能保存");
+        }
+    }
+
+    /// 更新清单地址：环境变量 REMINDER_UPDATE_URL 优先，其次 settings.json 的 update_url。
+    fn update_url(&self) -> Option<String> {
+        if let Ok(url) = std::env::var("REMINDER_UPDATE_URL") {
+            let url = url.trim().to_string();
+            if !url.is_empty() {
+                return Some(url);
+            }
+        }
+        let url = load_settings(&settings_path(&self.data_dir)).update_url;
+        let url = url.trim().to_string();
+        if url.is_empty() {
+            None
+        } else {
+            Some(url)
+        }
+    }
+
+    /// 后台检查更新；manual 为真时把结果也提示在状态条上。
+    fn check_update(&self, manual: bool) {
+        let Some(url) = self.update_url() else {
+            if manual {
+                self.toast("未配置更新地址，可在 settings.json 里填写 update_url");
+            }
+            return;
+        };
+        if self.update_busy.get() {
+            if manual {
+                self.toast("正在检查更新，请稍候");
+            }
+            return;
+        }
+        self.update_busy.set(true);
+        if manual {
+            self.toast("正在检查更新…");
+        }
+        let tx = self.update_tx.clone();
+        std::thread::spawn(move || {
+            let outcome = crate::update::fetch_manifest(&url).map(|manifest| {
+                if is_newer(&manifest.version, env!("CARGO_PKG_VERSION")) {
+                    Some(manifest)
+                } else {
+                    None
+                }
+            });
+            let _ = tx.send(UpdateMsg::Checked { manual, outcome });
+        });
+    }
+
+    /// 下载已确认的新版本，并校验 sha256；成功后打开所在目录供手动替换。
+    fn download_update(&self) {
+        let Some(manifest) = self.pending_update.borrow().clone() else {
+            self.toast("没有可下载的更新，请先检查更新");
+            return;
+        };
+        if self.update_busy.get() {
+            self.toast("正在下载，请稍候");
+            return;
+        }
+        self.update_busy.set(true);
+        self.toast(&format!("正在下载 v{}…", manifest.version));
+        let tx = self.update_tx.clone();
+        let dir = self.data_dir.clone();
+        std::thread::spawn(move || {
+            let result = crate::update::download(&manifest, &dir).inspect(|path| {
+                if let Some(parent) = path.parent() {
+                    let _ = crate::update::open_in_file_manager(parent);
+                }
+            });
+            let _ = tx.send(UpdateMsg::Downloaded(result));
+        });
+    }
+
+    /// 主定时器里收取后台更新任务的结果。
+    fn poll_updates(&self) {
+        let batch: Vec<UpdateMsg> = self.update_rx.borrow_mut().try_iter().collect();
+        for message in batch {
+            self.apply_update(message);
+        }
+    }
+
+    fn apply_update(&self, message: UpdateMsg) {
+        match message {
+            UpdateMsg::Checked { manual, outcome } => {
+                self.update_busy.set(false);
+                match outcome {
+                    Ok(Some(manifest)) => {
+                        let notes = manifest.notes.trim();
+                        let text = if notes.is_empty() {
+                            format!("发现新版本 v{}", manifest.version)
+                        } else {
+                            format!("发现新版本 v{}：{notes}", manifest.version)
+                        };
+                        if let Some(ui) = self.ui.upgrade() {
+                            ui.set_update_text(text.clone().into());
+                            ui.set_update_ready(true);
+                        }
+                        *self.pending_update.borrow_mut() = Some(manifest);
+                        self.toast(&text);
+                    }
+                    Ok(None) => {
+                        if let Some(ui) = self.ui.upgrade() {
+                            ui.set_update_text(
+                                format!("已是最新版本 v{}", env!("CARGO_PKG_VERSION")).into(),
+                            );
+                            ui.set_update_ready(false);
+                        }
+                        *self.pending_update.borrow_mut() = None;
+                        if manual {
+                            self.toast("已是最新版本");
+                        }
+                    }
+                    Err(error) => {
+                        self.log.log("WARN", &format!("检查更新失败：{error}"));
+                        if manual {
+                            self.toast(&format!("检查更新失败：{error}"));
+                        }
+                    }
+                }
+            }
+            UpdateMsg::Downloaded(result) => {
+                self.update_busy.set(false);
+                match result {
+                    Ok(path) => {
+                        if let Some(ui) = self.ui.upgrade() {
+                            ui.set_update_text(format!("更新包已下载：{}", path.display()).into());
+                        }
+                        self.toast(&format!(
+                            "更新包已下载到 {}，替换后重启即可生效",
+                            path.display()
+                        ));
+                    }
+                    Err(error) => {
+                        self.log.log("WARN", &format!("下载更新失败：{error}"));
+                        self.toast(&format!("下载更新失败：{error}"));
+                    }
+                }
+            }
         }
     }
 

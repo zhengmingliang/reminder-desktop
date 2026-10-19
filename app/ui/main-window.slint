@@ -526,6 +526,10 @@ export component MainWindow inherits Window {
     // 0 浅色 / 1 跟随系统 / 2 深色；默认跟随系统。
     in-out property <int> theme-mode: 1;
     in-out property <[string]> backup-names: [];
+    // 更新：当前版本、检查结果文案、是否已发现可下载的新版。
+    in-out property <string> version-text: "";
+    in-out property <string> update-text: "";
+    in-out property <bool> update-ready: false;
 
     callback search-changed(string);
     callback filter-changed(string);
@@ -560,6 +564,8 @@ export component MainWindow inherits Window {
     callback autostart-changed(bool);
     callback theme-changed(int);
     callback restore-backup(int);
+    callback check-update();
+    callback download-update();
 
     // 界面本地状态
     property <string> quick-text: "";
@@ -2364,126 +2370,101 @@ export component MainWindow inherits Window {
                     x: parent.width - 246px;
                     y: 92px;
                     width: 230px;
-                    height: 400px;
+                    height: 500px;
                     border-radius: 10px;
                     border-width: 1px;
                     border-color: Theme.line;
                     background: Theme.surface;
 
-                    Text {
-                        x: 16px;
-                        y: 14px;
-                        text: "外观";
-                        font-size: 12px;
-                        font-weight: 600;
-                        color: Theme.text3;
-                    }
-                    Text {
-                        x: 16px;
-                        y: 36px;
-                        text: "主题";
-                        font-size: 14px;
-                        font-weight: 600;
-                        color: Theme.text;
-                    }
-                    Rectangle {
-                        x: 16px;
-                        y: 62px;
-                        width: 198px;
-                        height: 28px;
-                        border-radius: 6px;
-                        background: Theme.seg;
-                        HorizontalLayout {
-                            spacing: 2px;
-                            SegBtn { label: "浅色"; active: root.theme-mode == 0; clicked => { root.theme-changed(0); } }
-                            SegBtn { label: "跟随系统"; active: root.theme-mode == 1; clicked => { root.theme-changed(1); } }
-                            SegBtn { label: "深色"; active: root.theme-mode == 2; clicked => { root.theme-changed(2); } }
-                        }
-                    }
-                    Text {
-                        x: 16px;
-                        y: 102px;
-                        text: "默认跟随系统";
-                        font-size: 12px;
-                        color: Theme.text3;
-                    }
-                    Rectangle {
-                        x: 16px;
-                        y: 130px;
-                        width: 198px;
-                        height: 1px;
-                        background: Theme.line;
-                    }
-                    Text {
-                        x: 16px;
-                        y: 144px;
-                        text: "开机自启动";
-                        font-size: 14px;
-                        font-weight: 600;
-                        color: Theme.text;
-                    }
-                    Toggle {
-                        x: 174px;
-                        y: 142px;
-                        checked: root.autostart-on;
-                        toggled => { root.autostart-changed(!root.autostart-on); }
-                    }
-                    Text {
-                        x: 16px;
-                        y: 168px;
-                        text: "登录系统后自动运行";
-                        font-size: 12px;
-                        color: Theme.text3;
-                    }
-                    Rectangle {
-                        x: 16px;
-                        y: 198px;
-                        width: 198px;
-                        height: 1px;
-                        background: Theme.line;
-                    }
-                    Text {
-                        x: 16px;
-                        y: 208px;
-                        text: "从备份恢复";
-                        font-size: 14px;
-                        font-weight: 600;
-                        color: Theme.text;
-                    }
-                    if root.backup-names.length == 0 : Text {
-                        x: 16px;
-                        y: 234px;
-                        width: 198px;
-                        text: "暂无备份，点击顶栏「备份」生成";
-                        font-size: 12px;
-                        color: Theme.text3;
-                        wrap: word-wrap;
-                    }
                     VerticalLayout {
-                        x: 16px;
-                        y: 234px;
-                        width: 198px;
-                        spacing: 4px;
-                        for name[index] in root.backup-names : Rectangle {
-                            height: 26px;
+                        padding: 16px;
+                        spacing: 10px;
+
+                        Text { text: "外观"; font-size: 12px; font-weight: 600; color: Theme.text3; }
+                        Text { text: "主题"; font-size: 14px; font-weight: 600; color: Theme.text; }
+                        Rectangle {
+                            height: 28px;
                             border-radius: 6px;
-                            background: restore-area.has-hover ? Theme.hover : transparent;
-                            Text {
-                                x: 8px;
-                                width: parent.width - 16px;
-                                height: parent.height;
-                                text: name;
-                                font-size: 12px;
-                                color: Theme.text2;
-                                overflow: elide;
-                                vertical-alignment: center;
+                            background: Theme.seg;
+                            HorizontalLayout {
+                                spacing: 2px;
+                                SegBtn { label: "浅色"; active: root.theme-mode == 0; clicked => { root.theme-changed(0); } }
+                                SegBtn { label: "跟随系统"; active: root.theme-mode == 1; clicked => { root.theme-changed(1); } }
+                                SegBtn { label: "深色"; active: root.theme-mode == 2; clicked => { root.theme-changed(2); } }
                             }
-                            restore-area := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.settings-open = false;
-                                    root.restore-backup(index);
+                        }
+                        Text { text: "默认跟随系统"; font-size: 12px; color: Theme.text3; }
+                        Rectangle { height: 1px; background: Theme.line; }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "开机自启动";
+                                font-size: 14px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            Toggle {
+                                checked: root.autostart-on;
+                                toggled => { root.autostart-changed(!root.autostart-on); }
+                            }
+                        }
+                        Text { text: "登录系统后自动运行"; font-size: 12px; color: Theme.text3; }
+                        Rectangle { height: 1px; background: Theme.line; }
+
+                        Text { text: "从备份恢复"; font-size: 14px; font-weight: 600; color: Theme.text; }
+                        if root.backup-names.length == 0 : Text {
+                            text: "暂无备份，点击顶栏「备份」生成";
+                            font-size: 12px;
+                            color: Theme.text3;
+                            wrap: word-wrap;
+                        }
+                        VerticalLayout {
+                            spacing: 4px;
+                            for name[index] in root.backup-names : Rectangle {
+                                height: 26px;
+                                border-radius: 6px;
+                                background: restore-area.has-hover ? Theme.hover : transparent;
+                                Text {
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    height: parent.height;
+                                    text: name;
+                                    font-size: 12px;
+                                    color: Theme.text2;
+                                    overflow: elide;
+                                    vertical-alignment: center;
                                 }
+                                restore-area := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.settings-open = false;
+                                        root.restore-backup(index);
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: Theme.line; }
+
+                        Text { text: "更新"; font-size: 12px; font-weight: 600; color: Theme.text3; }
+                        Text { text: root.version-text; font-size: 12px; color: Theme.text2; }
+                        if root.update-text != "" : Text {
+                            text: root.update-text;
+                            font-size: 12px;
+                            color: Theme.text3;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Btn { label: "检查更新"; pad-x: 10px; font-size: 12px; clicked => { root.check-update(); } }
+                            if root.update-ready : Btn {
+                                label: "下载更新";
+                                primary: true;
+                                pad-x: 10px;
+                                font-size: 12px;
+                                clicked => { root.download-update(); }
                             }
                         }
                     }

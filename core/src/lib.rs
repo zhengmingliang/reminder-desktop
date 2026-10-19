@@ -7,6 +7,7 @@ pub mod model;
 pub mod schedule;
 pub mod settings;
 pub mod store;
+pub mod update;
 pub mod validate;
 
 pub use audio::{check_sound_file, decode_bytes, read_sound, AudioSource, DEFAULT_CHIME};

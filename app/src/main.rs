@@ -8,6 +8,7 @@ mod logutil;
 mod notify;
 mod runtime;
 mod system_theme;
+mod update;
 mod xembed_tray;
 
 use chrono::Local;
