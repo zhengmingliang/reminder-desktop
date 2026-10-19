@@ -26,6 +26,10 @@ pub struct Notice {
     pub snooze: bool,
     pub snooze_count: u32,
     pub kind_label: String,
+    /// 计划时间已过才补发的（睡眠唤醒、改时间、程序没在跑）。
+    pub late: bool,
+    /// 被合并掉的更早次数。
+    pub missed: u32,
 }
 
 pub struct Player {
@@ -204,6 +208,8 @@ fn notice_from(reminder: &Reminder, hit: &DueHit, now: chrono::DateTime<Local>) 
             Schedule::Cron { .. } => "Cron",
         }
         .to_string(),
+        late: hit.late,
+        missed: hit.missed,
     }
 }
 

@@ -507,6 +507,8 @@ export component MainWindow inherits Window {
     in-out property <[PreviewLine]> preview-lines: [];
     in-out property <[TimelineRow]> timeline: [];
     in-out property <string> missed-count: "0";
+    // 本次运行里补发过的「错过」提醒条数，用于概览的补看入口。
+    in-out property <int> missed-notices-count: 0;
     in-out property <[RecordRow]> records: [];
     in-out property <string> preview-head: "";
     in-out property <string> preview-next: "";
@@ -566,6 +568,8 @@ export component MainWindow inherits Window {
     callback restore-backup(int);
     callback check-update();
     callback download-update();
+    callback review-missed();
+    callback dismiss-missed();
 
     // 界面本地状态
     property <string> quick-text: "";
@@ -1164,6 +1168,45 @@ export component MainWindow inherits Window {
                                     }
                                 }
 
+                                // 错过补看：睡眠唤醒、改时间、程序没在跑时补发的提醒，留一个入口再弹一遍。
+                                if root.missed-notices-count > 0 : Rectangle {
+                                    border-radius: 12px;
+                                    border-width: 1px;
+                                    border-color: Theme.danger-line;
+                                    background: Theme.danger-bg;
+                                    HorizontalLayout {
+                                        padding-left: 24px;
+                                        padding-right: 16px;
+                                        padding-top: 12px;
+                                        padding-bottom: 12px;
+                                        spacing: 12px;
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            vertical-alignment: center;
+                                            wrap: word-wrap;
+                                            font-size: 13px;
+                                            color: Theme.text;
+                                            text: "有 " + root.missed-notices-count
+                                                + " 条提醒在程序未运行、睡眠唤醒或改过系统时间后补发，点「补看」可以再看一遍。";
+                                        }
+                                        Btn {
+                                            label: "补看";
+                                            primary: true;
+                                            btn-height: 30px;
+                                            pad-x: 14px;
+                                            font-size: 13px;
+                                            clicked => { root.review-missed(); }
+                                        }
+                                        Btn {
+                                            label: "知道了";
+                                            btn-height: 30px;
+                                            pad-x: 14px;
+                                            font-size: 13px;
+                                            clicked => { root.dismiss-missed(); }
+                                        }
+                                    }
+                                }
+
                                 // 下一次提醒
                                 Rectangle {
                                     border-radius: 12px;
@@ -1296,7 +1339,7 @@ export component MainWindow inherits Window {
                                     StatCard {
                                         horizontal-stretch: 1;
                                         number: root.missed-count;
-                                        caption: "近 7 天错过";
+                                        caption: "今天已错过";
                                         warn: true;
                                     }
                                 }                                    HorizontalLayout {

@@ -83,6 +83,8 @@ struct Session {
     update_tx: mpsc::Sender<UpdateMsg>,
     /// 检查/下载进行中，避免重复触发。
     update_busy: Cell<bool>,
+    /// 本次运行里补发过的「错过」提醒，供概览上的「补看」按钮再弹一遍。
+    missed_notices: RefCell<Vec<Notice>>,
 }
 
 pub fn run(smoke: bool) -> Result<(), String> {
@@ -184,6 +186,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
         update_rx: RefCell::new(update_rx),
         update_tx,
         update_busy: Cell::new(false),
+        missed_notices: RefCell::new(Vec::new()),
     });
 
     if let Some(reason) = lock_store(&store).persist_block_reason().map(str::to_string) {
@@ -365,6 +368,14 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_re
     ui.on_download_update({
         let session = session.clone();
         move || session.download_update()
+    });
+    ui.on_review_missed({
+        let session = session.clone();
+        move || session.review_missed()
+    });
+    ui.on_dismiss_missed({
+        let session = session.clone();
+        move || session.clear_missed()
     });
     ui.on_quit({
         let session = session.clone();
@@ -990,6 +1001,56 @@ impl Session {
         }
     }
 
+    /// 记下这次补发的「错过」提醒：概览上给出「补看」入口，同一条只保留最新一次。
+    fn record_missed(&self, notices: Vec<Notice>) {
+        if notices.is_empty() {
+            return;
+        }
+        {
+            let mut list = self.missed_notices.borrow_mut();
+            for notice in notices {
+                if let Some(index) = list.iter().position(|item| item.id == notice.id) {
+                    list.remove(index);
+                }
+                list.push(notice);
+            }
+            // 只留最近 20 条，长时间运行也不会越积越多。
+            let extra = list.len().saturating_sub(20);
+            if extra > 0 {
+                list.drain(0..extra);
+            }
+        }
+        self.sync_missed_ui();
+    }
+
+    fn sync_missed_ui(&self) {
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_missed_notices_count(self.missed_notices.borrow().len() as i32);
+        }
+    }
+
+    /// 「补看」：把本次运行里错过的那几条再弹一遍（数据早已标记触发，不会重复入库）。
+    fn review_missed(self: &Rc<Self>) {
+        let notices: Vec<Notice> = self.missed_notices.borrow().clone();
+        if notices.is_empty() {
+            self.toast("没有错过的提醒");
+            return;
+        }
+        let count = notices.len();
+        for notice in notices {
+            self.send_fallback_notification(&notice);
+            self.open_popup(notice);
+        }
+        self.toast(&format!("重新弹出 {count} 条错过的提醒"));
+    }
+
+    /// 「知道了」：清掉补看列表。
+    fn clear_missed(&self) {
+        self.missed_notices.borrow_mut().clear();
+        self.sync_missed_ui();
+        self.toast("已确认错过的提醒");
+    }
+
     fn backup(&self) {
         // 先释放存储锁，再刷新备份列表（刷新同样需要锁）。
         let result = lock_store(&self.store).backup();
@@ -1297,6 +1358,13 @@ impl Session {
         if notices.is_empty() {
             return;
         }
+        // 先记下补发过的「错过」提醒，概览上给一个「补看」入口。
+        let missed: Vec<Notice> = notices
+            .iter()
+            .filter(|item| item.late || item.missed > 0)
+            .cloned()
+            .collect();
+        self.record_missed(missed);
         let overflow = if notices.len() > 5 {
             let rest = notices.split_off(5);
             let body = rest
@@ -1315,6 +1383,8 @@ impl Session {
                 snooze: false,
                 snooze_count: 0,
                 kind_label: "同时到期".into(),
+                late: false,
+                missed: 0,
             })
         } else {
             None
@@ -1790,6 +1860,8 @@ impl Session {
             snooze_count: 0,
             sound_enabled: false,
             sound_path: String::new(),
+            late: false,
+            missed: 0,
         });
         ui.set_status_text("预览弹窗".into());
     }
