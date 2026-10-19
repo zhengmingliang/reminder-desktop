@@ -14,6 +14,7 @@ use reminder_core::{
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
+use crate::hotkey::{self, HotkeyCommand};
 use crate::instance::{self, Launch};
 use crate::logutil::Logger;
 use crate::runtime::{self, Notice, Player, Wake};
@@ -80,6 +81,10 @@ struct Session {
     repeat_minutes: Cell<u32>,
     /// 已确认的新版本清单，等用户点「下载更新」。
     pending_update: RefCell<Option<Manifest>>,
+    /// 全局快捷键抓键线程；None 表示关闭或启用失败。
+    hotkey: RefCell<Option<hotkey::HotkeyHandle>>,
+    /// 给抓键线程发命令的通道（线程 clone 一份往里塞命令）。
+    hotkey_tx: mpsc::Sender<HotkeyCommand>,
     /// 后台更新任务的回传通道。
     update_rx: RefCell<mpsc::Receiver<UpdateMsg>>,
     update_tx: mpsc::Sender<UpdateMsg>,
@@ -157,6 +162,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
     ui.set_dir_entries(dirs.clone().into());
 
     let (update_tx, update_rx) = mpsc::channel::<UpdateMsg>();
+    let (hotkey_tx, hotkey_rx) = mpsc::channel::<hotkey::HotkeyCommand>();
 
     let session = Rc::new(Session {
         ui: ui.as_weak(),
@@ -187,6 +193,8 @@ pub fn run(smoke: bool) -> Result<(), String> {
         theme_mode: Cell::new(settings.theme),
         repeat_minutes: Cell::new(settings.repeat_minutes),
         pending_update: RefCell::new(None),
+        hotkey: RefCell::new(None),
+        hotkey_tx,
         update_rx: RefCell::new(update_rx),
         update_tx,
         update_busy: Cell::new(false),
@@ -197,6 +205,10 @@ pub fn run(smoke: bool) -> Result<(), String> {
         session.toast(&reason);
         log.log("ERROR", &reason);
     }
+
+    // 全局快捷键：仅 X11。抓不到（Wayland / 被占用）就降级，不影响其它功能。
+    ui.set_hotkey_on(settings.hotkey_enabled);
+    session.sync_hotkey(settings.hotkey_enabled);
 
     // 主文件坏过、这次是拿备份恢复回来的，要明确告诉用户，别让「数据变少了」变成玄学。
     if lock_store(&store).repaired_from_backup() {
@@ -245,6 +257,8 @@ pub fn run(smoke: bool) -> Result<(), String> {
     let notice_rx_timer = Rc::new(RefCell::new(notice_rx));
     let tray_rx = Rc::new(RefCell::new(tray_rx));
     let tray_rx_timer = tray_rx.clone();
+    let hotkey_rx = Rc::new(RefCell::new(hotkey_rx));
+    let hotkey_rx_timer = hotkey_rx.clone();
     let mut ticks = 0u32;
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(200), move || {
         ticks = ticks.wrapping_add(1);
@@ -264,6 +278,14 @@ pub fn run(smoke: bool) -> Result<(), String> {
             match command {
                 TrayCommand::Show => timed.toggle_main(),
                 TrayCommand::Menu(anchor) => timed.open_tray_menu(anchor),
+            }
+        }
+        let hotkeys: Vec<HotkeyCommand> =
+            hotkey_rx_timer.borrow_mut().try_iter().collect();
+        for command in hotkeys {
+            match command {
+                HotkeyCommand::ToggleMain => timed.toggle_main(),
+                HotkeyCommand::QuickNew => timed.new_reminder_from_tray(),
             }
         }
     });
@@ -385,6 +407,10 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_re
     ui.on_repeat_changed({
         let session = session.clone();
         move |minutes| session.set_repeat_minutes(minutes)
+    });
+    ui.on_hotkey_changed({
+        let session = session.clone();
+        move |on| session.set_hotkey(on)
     });
     ui.on_check_update({
         let session = session.clone();
@@ -989,6 +1015,46 @@ impl Session {
             };
             self.toast(&message);
         }
+    }
+
+    /// 按开关状态启动或停止全局快捷键抓键线程，并把结果写到设置页的文案上。
+    fn sync_hotkey(&self, enabled: bool) {
+        if let Some(handle) = self.hotkey.borrow_mut().take() {
+            handle.stop();
+        }
+        let Some(ui) = self.ui.upgrade() else {
+            return;
+        };
+        if !enabled {
+            ui.set_hotkey_status("已关闭".into());
+            return;
+        }
+        match hotkey::spawn(self.hotkey_tx.clone(), self.log.clone()) {
+            Ok(handle) => {
+                *self.hotkey.borrow_mut() = Some(handle);
+                ui.set_hotkey_status("已启用：Ctrl+Alt+R 呼出主窗口，Ctrl+Alt+N 快速新建".into());
+            }
+            Err(message) => {
+                ui.set_hotkey_status(format!("启用失败：{message}").into());
+            }
+        }
+    }
+
+    /// 设置页切换全局快捷键开关：立即生效并持久化到 settings.json。
+    fn set_hotkey(&self, on: bool) {
+        let path = settings_path(&self.data_dir);
+        let mut settings = load_settings(&path);
+        settings.hotkey_enabled = on;
+        if let Err(error) = save_settings(&path, &settings) {
+            self.log.log("ERROR", &format!("快捷键设置保存失败：{error}"));
+            self.toast("快捷键设置未能保存");
+            return;
+        }
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_hotkey_on(on);
+        }
+        self.sync_hotkey(on);
+        self.log.log("INFO", &format!("全局快捷键开关={on}"));
     }
 
     /// 更新清单地址：环境变量 REMINDER_UPDATE_URL 优先，其次 settings.json 的 update_url。

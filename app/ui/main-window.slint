@@ -543,6 +543,9 @@ export component MainWindow inherits Window {
     in-out property <bool> update-ready: false;
     // 弹窗一直没处理时的再响间隔（分钟），0 = 不再响；默认 5。
     in-out property <int> repeat-minutes: 5;
+    // 全局快捷键开关与状态文案（仅 X11 会话能真正抓到键）。
+    in-out property <bool> hotkey-on: true;
+    in-out property <string> hotkey-status: "";
 
     callback search-changed(string);
     callback filter-changed(string);
@@ -578,6 +581,7 @@ export component MainWindow inherits Window {
     callback autostart-changed(bool);
     callback theme-changed(int);
     callback repeat-changed(int);
+    callback hotkey-changed(bool);
     callback restore-backup(int);
     callback check-update();
     callback download-update();
@@ -2596,6 +2600,24 @@ export component MainWindow inherits Window {
                             }
                         }
                         Text { text: "弹窗一直没处理时，每隔一段时间再响一次"; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
+                        Rectangle { height: 1px; background: Theme.line; }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "全局快捷键";
+                                font-size: 14px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            Toggle {
+                                checked: root.hotkey-on;
+                                toggled => { root.hotkey-changed(!root.hotkey-on); }
+                            }
+                        }
+                        Text { text: root.hotkey-status; font-size: 12px; color: Theme.text3; wrap: word-wrap; }
                         Rectangle { height: 1px; background: Theme.line; }
 
                         Text { text: "从备份恢复"; font-size: 14px; font-weight: 600; color: Theme.text; }

@@ -48,6 +48,10 @@ fn default_repeat_minutes() -> u32 {
     DEFAULT_REPEAT_MINUTES
 }
 
+fn default_hotkey_enabled() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -58,6 +62,9 @@ pub struct Settings {
     /// 弹窗一直没被处理时，每隔多少分钟再响一次；0 表示不再响。
     #[serde(default = "default_repeat_minutes")]
     pub repeat_minutes: u32,
+    /// 是否注册全局快捷键（Ctrl+Alt+R 呼出主窗口，Ctrl+Alt+N 快速新建）。仅 X11 会话生效。
+    #[serde(default = "default_hotkey_enabled")]
+    pub hotkey_enabled: bool,
 }
 
 impl Default for Settings {
@@ -66,6 +73,7 @@ impl Default for Settings {
             theme: ThemeMode::default(),
             update_url: String::new(),
             repeat_minutes: DEFAULT_REPEAT_MINUTES,
+            hotkey_enabled: true,
         }
     }
 }
@@ -117,6 +125,7 @@ mod tests {
         let loaded = load_settings(&path);
         assert_eq!(loaded.theme, ThemeMode::Dark);
         assert_eq!(loaded.repeat_minutes, DEFAULT_REPEAT_MINUTES);
+        assert!(loaded.hotkey_enabled, "老设置里没有快捷键开关，应默认开启");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -132,6 +141,7 @@ mod tests {
                 theme: ThemeMode::Dark,
                 update_url: "https://example.com/latest.json".into(),
                 repeat_minutes: 0,
+                hotkey_enabled: false,
             },
         )
         .unwrap();
@@ -140,6 +150,7 @@ mod tests {
         assert_eq!(loaded.update_url, "https://example.com/latest.json");
         // 关掉（0）也要如实存回来，不能被默认值顶掉。
         assert_eq!(loaded.repeat_minutes, 0);
+        assert!(!loaded.hotkey_enabled);
         // 临时文件不应残留。
         assert!(!path.with_extension("json.tmp").exists());
         assert_eq!(ThemeMode::from_index(2), ThemeMode::Dark);

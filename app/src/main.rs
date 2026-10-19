@@ -3,6 +3,7 @@
 mod autostart;
 mod cli;
 mod glue;
+mod hotkey;
 mod instance;
 mod logutil;
 mod notify;
