@@ -2,6 +2,8 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 pub const TITLE_MAX: usize = 80;
+/// 标签长度上限。标签是随手打的分类名，长了列表里放不下。
+pub const TAG_MAX: usize = 12;
 pub const BODY_MAX: usize = 4000;
 pub const DELAY_MIN: u32 = 1;
 pub const DELAY_MAX: u32 = 525_600;
@@ -77,6 +79,8 @@ pub struct Draft {
     pub cron_end: String,
     /// Cron 最多触发次数，空字符串表示不限。
     pub cron_max: String,
+    /// 标签：随手写的分类名，留空表示不分类。
+    pub tag: String,
 }
 
 impl Draft {
@@ -97,6 +101,7 @@ impl Draft {
             early_minutes: 0,
             cron_end: String::new(),
             cron_max: String::new(),
+            tag: String::new(),
         }
     }
 }
@@ -140,6 +145,9 @@ pub struct Reminder {
     /// 移入回收站的时间（毫秒）。None 表示还在正常列表里；回收站保留期到后彻底清除。
     #[serde(default)]
     pub deleted_at_ms: Option<i64>,
+    /// 标签：列表色条、弹窗色标与筛选都用它；None 表示不分类。
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 impl Reminder {
@@ -206,8 +214,37 @@ impl Reminder {
             early_minutes: i32::try_from(self.early_minutes).unwrap_or(0),
             cron_end,
             cron_max,
+            tag: self.tag.clone().unwrap_or_default(),
         }
     }
+
+    /// 标签文本；没有标签是空串，界面据此决定要不要画色条。
+    pub fn tag_text(&self) -> &str {
+        self.tag.as_deref().unwrap_or("")
+    }
+}
+
+/// 标签配色：颜色跟着标签文本走，同样的文本永远得到同一个颜色，不用单独挑色。
+pub const TAG_COLORS: [&str; 6] =
+    ["#2E7D74", "#B4701F", "#6B4FA0", "#B42318", "#067647", "#175CD3"];
+
+/// 取标签颜色；没有标签（空文本）返回空串，界面据此决定要不要画色条。
+pub fn tag_color(tag: &str) -> &'static str {
+    if tag.trim().is_empty() {
+        return "";
+    }
+    let sum: usize = tag.chars().map(|character| u32::from(character) as usize).sum();
+    TAG_COLORS[sum % TAG_COLORS.len()]
+}
+
+/// 标签颜色的 RGB 分量，界面直接拿来画色条；没有标签时返回 None。
+pub fn tag_rgb(tag: &str) -> Option<(u8, u8, u8)> {
+    let hex = tag_color(tag);
+    if hex.is_empty() {
+        return None;
+    }
+    let value = u32::from_str_radix(hex.trim_start_matches('#'), 16).ok()?;
+    Some(((value >> 16) as u8, (value >> 8) as u8, value as u8))
 }
 
 pub fn millis_to_local(ms: i64) -> DateTime<Local> {
@@ -223,6 +260,41 @@ pub fn now_ms(now: DateTime<Local>) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 标签取色：同样文本永远得到同一个颜色，没有标签就不给颜色。
+    #[test]
+    fn tag_color_is_stable_and_absent_when_empty() {
+        assert_eq!(tag_color("工作"), tag_color("工作"));
+        assert_eq!(tag_color(""), "");
+        assert_eq!(tag_color("   "), "");
+        assert!(tag_rgb("").is_none());
+        let rgb = tag_rgb("工作").expect("有标签就该有颜色");
+        assert_eq!(tag_rgb("工作"), Some(rgb), "同一个标签颜色必须稳定");
+        assert!(TAG_COLORS.contains(&tag_color("工作")), "颜色要取自预设配色");
+    }
+
+    /// 老版本 reminders.json 没有 tag 字段，读进来应是不分类。
+    #[test]
+    fn older_reminder_without_tag_defaults_to_no_tag() {
+        let raw = serde_json::json!({
+            "id": "c",
+            "title": "喝水",
+            "body": "",
+            "schedule": {"kind": "delay", "minutes": 5, "fire_at_ms": 1_800_000_000_000i64},
+            "sound_enabled": true,
+            "sound_path": null,
+            "enabled": true,
+            "status": "pending",
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "last_fired_at_ms": null,
+            "last_occurrence_ms": null
+        });
+        let reminder: Reminder = serde_json::from_value(raw).unwrap();
+        assert_eq!(reminder.tag, None);
+        assert_eq!(reminder.tag_text(), "");
+        assert_eq!(reminder.to_draft().tag, "");
+    }
 
     /// 老版本 reminders.json 没有 early_minutes / early_notice_sent_ms，读进来应是不提前。
     #[test]

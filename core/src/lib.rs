@@ -11,7 +11,10 @@ pub mod update;
 pub mod validate;
 
 pub use audio::{check_sound_file, decode_bytes, read_sound, AudioSource, DEFAULT_CHIME};
-pub use model::{millis_to_local, Draft, Kind, Reminder, Schedule, Status};
+pub use model::{
+    millis_to_local, tag_color, tag_rgb, Draft, Kind, Reminder, Schedule, Status, TAG_COLORS,
+    TAG_MAX,
+};
 pub use schedule::{
     center_on_monitor, due_reminders, early_reminders, format_point, list_texts, next_occurrence_ms,
     next_wake, recent_records, skipped_reminders, time_bucket, today_timeline, DueHit, EarlyHit,

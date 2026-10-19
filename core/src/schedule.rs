@@ -810,6 +810,7 @@ mod tests {
             occurrence_count: 0,
             skip_occurrence_ms: None,
             acknowledged_at_ms: None,
+            tag: None,
             deleted_at_ms: None,
         }
     }

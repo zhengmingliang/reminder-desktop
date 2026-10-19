@@ -64,6 +64,9 @@ export component PopupWindow inherits Window {
     in-out property <bool> is-snooze: false;
     in-out property <int> stack-count: 1;
     in-out property <int> repeat-minutes: 0;
+    // 标签与它的颜色；没有标签时 tag-text 为空，不显示这一行。
+    in-out property <string> tag-text: "";
+    in-out property <color> tag-color: #00000000;
 
     callback dismiss();
     callback open-main();
@@ -228,6 +231,26 @@ export component PopupWindow inherits Window {
                         color: Theme.text;
                         wrap: word-wrap;
                         vertical-stretch: 0;
+                    }
+
+                    if root.tag-text != "" : HorizontalLayout {
+                        height: 18px;
+                        spacing: 6px;
+                        alignment: start;
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: root.tag-color;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: root.tag-text;
+                            font-size: 12px;
+                            color: Theme.text2;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
                     }
 
                     // 正文框：高度按文本测量自适应（padding 上下各 12 → +24px），

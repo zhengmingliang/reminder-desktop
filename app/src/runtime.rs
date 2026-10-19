@@ -30,6 +30,8 @@ pub struct Notice {
     pub late: bool,
     /// 被合并掉的更早次数。
     pub missed: u32,
+    /// 标签文本，弹窗上带一个同色标记；没标签是空串。
+    pub tag: String,
 }
 
 pub struct Player {
@@ -248,6 +250,7 @@ fn notice_from(reminder: &Reminder, hit: &DueHit, now: chrono::DateTime<Local>) 
         .to_string(),
         late: hit.late,
         missed: hit.missed,
+        tag: reminder.tag_text().to_string(),
     }
 }
 
@@ -266,6 +269,7 @@ fn early_notice_from(reminder: &Reminder, hit: &EarlyHit, now: chrono::DateTime<
         kind_label: "提前提醒".to_string(),
         late: false,
         missed: 0,
+        tag: reminder.tag_text().to_string(),
     }
 }
 

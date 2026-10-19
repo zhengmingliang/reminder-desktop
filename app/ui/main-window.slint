@@ -26,6 +26,15 @@ export struct ReminderRow {
     group-label: string,
     group-count: string,
     group-first: bool,
+    // 标签与它的颜色：颜色由 Rust 侧按标签文本算出，同样文本永远同色。
+    tag: string,
+    tag-color: color,
+}
+
+export struct TagChip {
+    label: string,
+    color: color,
+    active: bool,
 }
 
 export struct DirEntry {
@@ -235,6 +244,15 @@ component ReminderItem inherits Rectangle {
         padding-top: 10px;
         padding-bottom: 10px;
         spacing: 10px;
+
+        // 标签色条：贴在行最左侧，没有标签时不占位。
+        if root.item.tag-color != #00000000 : Rectangle {
+            width: 3px;
+            height: 100%;
+            border-radius: 2px;
+            background: root.item.tag-color;
+            horizontal-stretch: 0;
+        }
 
         // 第一列：多选/回收站时是复选框，平时是状态图标。
         Rectangle {
@@ -575,6 +593,11 @@ export component MainWindow inherits Window {
     in-out property <string> banner: "";
     in-out property <string> form-title: "";
     in-out property <string> form-body: "";
+    // 标签：随手写的分类名，留空表示不分类；颜色由 Rust 侧按文本算好。
+    in-out property <string> form-tag: "";
+    in-out property <string> tag-error: "";
+    // 当前草稿标签对应的颜色，表单里的小圆点用；没有标签时是全透明。
+    in-out property <color> tag-color: #00000000;
     in-out property <bool> form-enabled: true;
     in-out property <string> kind: "delay";
     in-out property <string> form-minutes: "";
@@ -650,6 +673,9 @@ export component MainWindow inherits Window {
     in-out property <int> trash-days: 30;
     // 列表排列方式：0 按状态分组 / 1 按时间分档；持久化在 settings.json。
     in-out property <int> sort-mode: 0;
+    // 标签筛选：当前选中的标签（空串表示不过滤）与全部可选标签（含各自配色）。
+    in-out property <string> tag-filter: "";
+    in-out property <[TagChip]> tag-chips: [];
     // 数据与日志：日志展开开关、日志尾部文本、打开目录的结果提示。
     in-out property <bool> log-open: false;
     in-out property <string> log-text: "";
@@ -712,6 +738,7 @@ export component MainWindow inherits Window {
     callback trash-empty();
     callback trash-days-changed(float);
     callback sort-mode-changed(int);
+    callback tag-picked(string);
     callback close-requested();
     callback restore-backup(int);
     callback check-update();
@@ -1145,6 +1172,22 @@ export component MainWindow inherits Window {
                                                 root.select-mode = true;
                                             }
                                         }
+                                    }
+                                }
+
+                                // 标签筛选行：有标签才出现，点一下只看该标签，再点一下取消。
+                                if root.tag-chips.length > 0 && !root.trash-mode : HorizontalLayout {
+                                    height: 30px;
+                                    spacing: 6px;
+                                    alignment: start;
+                                    for chip in root.tag-chips : Chip {
+                                        pill: true;
+                                        chip-height: 24px;
+                                        pad-x: 8px;
+                                        font-size: 11px;
+                                        label: chip.label;
+                                        active: chip.active;
+                                        clicked => { root.tag-picked(chip.label); }
                                     }
                                 }
 
@@ -1986,6 +2029,48 @@ export component MainWindow inherits Window {
                                                 }
                                                 if root.body-error != "" : ErrorText {
                                                     text: root.body-error;
+                                                }
+                                            }
+
+                                            VerticalLayout {
+                                                spacing: 6px;
+                                                HorizontalLayout {
+                                                    spacing: 4px;
+                                                    Text {
+                                                        text: "标签";
+                                                        font-size: 13px;
+                                                        font-weight: 500;
+                                                        color: Theme.text2;
+                                                        horizontal-stretch: 0;
+                                                    }
+                                                    Text {
+                                                        text: "（可选，用来分组和着色）";
+                                                        font-size: 13px;
+                                                        color: Theme.text3;
+                                                        horizontal-stretch: 0;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                    if root.form-tag != "" : Rectangle {
+                                                        width: 10px;
+                                                        height: 10px;
+                                                        border-radius: 5px;
+                                                        background: root.tag-color;
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                }
+                                                Field {
+                                                    width: 100%;
+                                                    font-size: 14px;
+                                                    invalid: root.tag-error != "";
+                                                    placeholder: "例如：工作、健康、家人";
+                                                    text <=> root.form-tag;
+                                                    edited(t) => {
+                                                        root.dirty = true;
+                                                        root.draft-edited();
+                                                    }
+                                                }
+                                                if root.tag-error != "" : ErrorText {
+                                                    text: root.tag-error;
                                                 }
                                             }
                                         }

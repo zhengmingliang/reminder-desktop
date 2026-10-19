@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::model::{
     now_ms, Draft, Kind, Reminder, Schedule, Status, BODY_MAX, DELAY_MAX, DELAY_MIN, REMINDER_CAP,
-    TITLE_MAX,
+    TAG_MAX, TITLE_MAX,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +43,13 @@ pub fn inspect(draft: &Draft, now: DateTime<Local>) -> Report {
         errors.push(err(
             "body",
             format!("正文最多 {BODY_MAX} 个字，当前 {body_len} 个"),
+        ));
+    }
+    let tag_len = draft.tag.trim().chars().count();
+    if tag_len > TAG_MAX {
+        errors.push(err(
+            "tag",
+            format!("标签最多 {TAG_MAX} 个字，当前 {tag_len} 个"),
         ));
     }
 
@@ -198,6 +205,10 @@ pub fn build_reminder(
         skip_occurrence_ms,
         // 保存后提醒回到待触发/循环，上一轮的确认记录不再代表这一轮，清掉。
         acknowledged_at_ms: None,
+        tag: {
+            let tag = draft.tag.trim();
+            if tag.is_empty() { None } else { Some(tag.to_string()) }
+        },
         // 新建/编辑总是回到正常列表；恢复走 store 的 restore_deleted。
         deleted_at_ms: None,
     })
@@ -671,6 +682,32 @@ mod tests {
         draft.title = "站会".into();
         draft.body = "带上周报".into();
         draft
+    }
+
+    /// 标签：存进去前去掉首尾空格，空的当没填；超长要报错。
+    #[test]
+    fn tag_is_trimmed_and_length_limited() {
+        let mut item = draft();
+        item.tag = "  健康  ".into();
+        let reminder = build_reminder(&item, None, now(), 0).unwrap();
+        assert_eq!(reminder.tag.as_deref(), Some("健康"));
+        assert_eq!(reminder.tag_text(), "健康");
+
+        let mut blank = draft();
+        blank.tag = "   ".into();
+        assert_eq!(build_reminder(&blank, None, now(), 0).unwrap().tag, None);
+
+        let mut long = draft();
+        long.tag = "x".repeat(TAG_MAX + 1);
+        let report = inspect(&long, now());
+        assert!(!report.ok(), "标签超长应该拦下来");
+        let message = report
+            .errors
+            .iter()
+            .find(|error| error.field == "tag")
+            .map(|error| error.message.clone())
+            .unwrap_or_default();
+        assert!(message.contains("标签最多"), "实际提示：{message}");
     }
 
     #[test]

@@ -11,8 +11,8 @@ use reminder_core::update::{is_newer, Manifest};
 use reminder_core::validate::{arm_snooze, clear_skip, skip_next_occurrence};
 use reminder_core::{
     check_sound_file, clamp_trash_keep_days, format_point, in_quiet_hours, inspect, millis_to_local,
-    load_settings, save_settings, settings_path, valid_hhmm, DndMode, Draft, Kind, Reminder, Report,
-    Schedule, SortMode, Status, Store, ThemeMode, DEFAULT_TRASH_KEEP_DAYS,
+    load_settings, save_settings, settings_path, tag_rgb, valid_hhmm, DndMode, Draft, Kind, Reminder,
+    Report, Schedule, SortMode, Status, Store, ThemeMode, DEFAULT_TRASH_KEEP_DAYS,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
@@ -115,6 +115,8 @@ struct Session {
     pending_purge: RefCell<Option<String>>,
     /// 列表排列方式：按状态分组 / 按时间分档。持久化在 settings.json。
     sort_mode: Cell<SortMode>,
+    /// 当前标签筛选；None 表示不过滤。
+    tag_filter: RefCell<Option<String>>,
 }
 
 pub fn run(smoke: bool) -> Result<(), String> {
@@ -234,6 +236,7 @@ pub fn run(smoke: bool) -> Result<(), String> {
         pending_batch_ids: RefCell::new(Vec::new()),
         pending_purge: RefCell::new(None),
         sort_mode: Cell::new(settings.sort_mode),
+        tag_filter: RefCell::new(None),
     });
 
     if let Some(reason) = lock_store(&store).persist_block_reason().map(str::to_string) {
@@ -416,8 +419,16 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {
         let session = session.clone();
         move || {
             session.reveal_errors.set(true);
+            // 标签色点跟着输入实时变，写完能立刻看到这条会是什么颜色。
+            if let Some(ui) = session.ui.upgrade() {
+                ui.set_tag_color(tag_color_of(&ui.get_form_tag().to_string()));
+            }
             session.refresh_validation();
         }
+    });
+    ui.on_tag_picked({
+        let session = session.clone();
+        move |tag| session.toggle_tag_filter(tag.to_string())
     });
     ui.on_save({
         let session = session.clone();
@@ -803,6 +814,8 @@ impl Session {
         ui.set_form_sound(draft.sound_enabled);
         ui.set_form_enabled(draft.enabled);
         ui.set_form_early(draft.early_minutes);
+        ui.set_form_tag(draft.tag.clone().into());
+        ui.set_tag_color(tag_color_of(&draft.tag));
         ui.set_sound_label(sound_label(&self.sound_path.borrow()).into());
         ui.set_delete_enabled(self.loaded.borrow().is_some());
         ui.set_editor_heading(if self.loaded.borrow().is_some() {
@@ -898,6 +911,7 @@ impl Session {
             sound_path: self.sound_path.borrow().clone(),
             enabled: ui.get_form_enabled(),
             early_minutes: ui.get_form_early(),
+            tag: ui.get_form_tag().to_string(),
         }
     }
 
@@ -1222,6 +1236,17 @@ impl Session {
     }
 
     /// 进入 / 退出回收站视图。切换时清掉勾选，避免跨视图残留。
+    /// 点标签筛选：选中就只看该标签，再点一次取消。
+    fn toggle_tag_filter(&self, tag: String) {
+        let current = self.tag_filter.borrow().clone();
+        *self.tag_filter.borrow_mut() = if current.as_deref() == Some(tag.as_str()) {
+            None
+        } else {
+            Some(tag)
+        };
+        self.refresh_list();
+    }
+
     fn set_trash_mode(&self, on: bool) {
         let Some(ui) = self.ui.upgrade() else {
             return;
@@ -2234,6 +2259,32 @@ impl Session {
             .filter(|item| !item.is_deleted())
             .cloned()
             .collect();
+        // 标签筛选：选中的标签如果已经没有条目了（都被删掉），筛选条件一起清掉，
+        // 否则列表会一直空着且看不出原因。
+        let mut tag_names: Vec<String> =
+            active.iter().filter_map(|item| item.tag.clone()).collect();
+        tag_names.sort();
+        tag_names.dedup();
+        if self
+            .tag_filter
+            .borrow()
+            .as_deref()
+            .is_some_and(|tag| !tag_names.iter().any(|name| name == tag))
+        {
+            *self.tag_filter.borrow_mut() = None;
+        }
+        let tag_filter: Option<String> = self.tag_filter.borrow().clone();
+        let tag_chips: Vec<TagChip> = tag_names
+            .iter()
+            .map(|name| TagChip {
+                label: name.clone().into(),
+                color: tag_color_of(name),
+                active: tag_filter.as_deref() == Some(name.as_str()),
+            })
+            .collect();
+        ui.set_tag_chips(ModelRc::new(VecModel::from(tag_chips)));
+        ui.set_tag_filter(tag_filter.clone().unwrap_or_default().into());
+
         let pending = active.iter().filter(|item| bucket(item) == "pending").count();
         let paused = active.iter().filter(|item| bucket(item) == "paused").count();
         let total = active.len();
@@ -2322,6 +2373,8 @@ impl Session {
                         group_label: String::new().into(),
                         group_count: String::new().into(),
                         group_first: false,
+                        tag: item.tag_text().into(),
+                        tag_color: tag_color_of(item.tag_text()),
                     }
                 })
                 .collect()
@@ -2330,6 +2383,9 @@ impl Session {
             let mut items: Vec<&Reminder> = active
                 .iter()
                 .filter(|item| filter == "all" || group_key(item, by_time, now) == filter)
+                .filter(|item| {
+                    tag_filter.as_deref().is_none_or(|tag| item.tag.as_deref() == Some(tag))
+                })
                 .filter(|item| search.is_empty() || contains_query(item, &search))
                 .collect();
             items.sort_by(|left, right| {
@@ -2377,6 +2433,8 @@ impl Session {
                             .unwrap_or_default()
                             .into(),
                         group_first: seen.insert(keys[index]),
+                        tag: item.tag_text().into(),
+                        tag_color: tag_color_of(item.tag_text()),
                     }
                 })
                 .collect()
@@ -2482,6 +2540,7 @@ impl Session {
                 kind_label: "同时到期".into(),
                 late: false,
                 missed: 0,
+                tag: String::new(),
             })
         } else {
             None
@@ -2542,6 +2601,8 @@ impl Session {
         popup.set_note(notice.note.into());
         popup.set_is_snooze(notice.snooze);
         popup.set_kind_label(notice.kind_label.into());
+        popup.set_tag_text(notice.tag.clone().into());
+        popup.set_tag_color(tag_color_of(&notice.tag));
         popup.set_kicker(if notice.snooze {
             format!("稍后提醒 · 第 {} 次", notice.snooze_count.saturating_add(1)).into()
         } else {
@@ -3043,6 +3104,7 @@ impl Session {
             sound_path: String::new(),
             late: false,
             missed: 0,
+            tag: reminder.tag_text().to_string(),
         });
         ui.set_status_text("预览弹窗".into());
     }
@@ -3228,6 +3290,7 @@ fn show_report(ui: &MainWindow, report: &Report) {
     ui.set_cron_end_error(field(report, "cron_end").into());
     ui.set_cron_max_error(field(report, "cron_max").into());
     ui.set_sound_error(field(report, "sound").into());
+    ui.set_tag_error(field(report, "tag").into());
     ui.set_form_error(field(report, "form").into());
     ui.set_delay_hint(report.delay_hint.clone().into());
     ui.set_at_hint(report.at_hint.clone().into());
@@ -3295,6 +3358,14 @@ const BACKUP_MENU_LIMIT: usize = 5;
 const LOG_TAIL_LINES: usize = 40;
 const LOG_TAIL_CHARS: usize = 3000;
 
+/// 标签文本转界面用的颜色；没有标签给一个全透明色，行里就不画色条。
+fn tag_color_of(tag: &str) -> slint::Color {
+    match tag_rgb(tag) {
+        Some((r, g, b)) => slint::Color::from_rgb_u8(r, g, b),
+        None => slint::Color::from_argb_u8(0, 0, 0, 0),
+    }
+}
+
 /// 读日志文件尾部。面板里看最近几十行就够定位问题，读全量没意义。
 fn read_log_tail(path: &Path) -> String {
     let Ok(bytes) = fs::read(path) else {
@@ -3343,6 +3414,7 @@ fn sync_rows(model: &VecModel<ReminderRow>, rows: Vec<ReminderRow>) {
 fn contains_query(reminder: &Reminder, query: &str) -> bool {
     reminder.title.to_lowercase().contains(query)
         || reminder.body.to_lowercase().contains(query)
+        || reminder.tag_text().to_lowercase().contains(query)
         || match &reminder.schedule {
             reminder_core::Schedule::Cron { expression, .. } => expression.to_lowercase().contains(query),
             _ => false,
