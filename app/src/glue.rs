@@ -284,6 +284,10 @@ fn wire(ui: &MainWindow, session: &Rc<Session>) {        ui.window().on_close_re
         let session = session.clone();
         move || session.hide_main()
     });
+    ui.on_open_settings({
+        let session = session.clone();
+        move || session.open_settings()
+    });
     ui.on_autostart_changed({
         let session = session.clone();
         move |on| session.set_autostart(on)
@@ -1187,7 +1191,7 @@ impl Session {
             self.log.log("ERROR", &format!("无法显示提醒弹窗：{error}"));
             return;
         }
-        place_window(popup.window(), index, 440, 540, true);
+        place_window(popup.window(), index, 440, 540, true, true);
         let weak = popup.as_weak();
         let mut timers = Vec::new();
         for delay in [80u64, 280] {
@@ -1195,7 +1199,7 @@ impl Session {
             let weak = weak.clone();
             timer.start(slint::TimerMode::SingleShot, Duration::from_millis(delay), move || {
                 if let Some(popup) = weak.upgrade() {
-                    place_window(popup.window(), index, 440, 540, true);
+                    place_window(popup.window(), index, 440, 540, true, true);
                 }
             });
             timers.push(timer);
@@ -1916,7 +1920,14 @@ fn focus_window(window: &slint::Window) {
     });
 }
 
-fn place_window(window: &slint::Window, stack: u32, logical_w: u32, logical_h: u32, on_top: bool) {
+fn place_window(
+    window: &slint::Window,
+    stack: u32,
+    logical_w: u32,
+    logical_h: u32,
+    on_top: bool,
+    prefer_cursor: bool,
+) {
     let _ = with_winit(window, |winit_window| {
         winit_window.set_window_level(if on_top {
             winit::window::WindowLevel::AlwaysOnTop
@@ -1926,16 +1937,32 @@ fn place_window(window: &slint::Window, stack: u32, logical_w: u32, logical_h: u
         if on_top {
             let _ = winit_window.request_user_attention(Some(winit::window::UserAttentionType::Critical));
         }
-        let Some(monitor) = winit_window
-            .primary_monitor()
-            .or_else(|| winit_window.current_monitor())
-            .or_else(|| winit_window.available_monitors().next())
-        else {
+        // 提醒弹窗优先放到光标所在的显示器；Wayland 没有全局光标坐标（cursor_point 返回 None），
+        // 主窗口本身则固定跟随系统主屏，不受光标移动影响。
+        let monitors: Vec<_> = winit_window
+            .available_monitors()
+            .map(|monitor| (monitor.position(), monitor.size(), monitor.scale_factor()))
+            .collect();
+        let cursor = if prefer_cursor { cursor_point() } else { None };
+        let on_cursor = cursor.and_then(|(cursor_x, cursor_y)| {
+            monitors.iter().copied().find(|(origin, size, _)| {
+                cursor_x >= origin.x
+                    && cursor_x < origin.x + size.width as i32
+                    && cursor_y >= origin.y
+                    && cursor_y < origin.y + size.height as i32
+            })
+        });
+        let (origin, size, scale) = if let Some(hit) = on_cursor {
+            hit
+        } else if let Some(monitor) = winit_window.primary_monitor() {
+            (monitor.position(), monitor.size(), monitor.scale_factor())
+        } else if let Some(monitor) = winit_window.current_monitor() {
+            (monitor.position(), monitor.size(), monitor.scale_factor())
+        } else if let Some(fallback) = monitors.first().copied() {
+            fallback
+        } else {
             return;
         };
-        let origin = monitor.position();
-        let size = monitor.size();
-        let scale = monitor.scale_factor();
         let outer = winit_window.outer_size();
         let (win_w, win_h) = if outer.width > 80 && outer.height > 80 {
             (outer.width, outer.height)
@@ -1958,13 +1985,33 @@ fn place_window(window: &slint::Window, stack: u32, logical_w: u32, logical_h: u
     });
 }
 
+/// 纯 X11 会话下向 X 服务器查询全局光标位置（物理像素）。
+/// 纯 Wayland 会话拿不到全局光标坐标，返回 None，由调用方回退到主显示器。
+#[cfg(all(unix, not(target_os = "macos")))]
+fn cursor_point() -> Option<(i32, i32)> {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        return None;
+    }
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let (connection, screen_num) = x11rb::connect(None).ok()?;
+    let screen = connection.setup().roots.get(screen_num)?;
+    let reply = connection.query_pointer(screen.root).ok()?.reply().ok()?;
+    Some((reply.root_x as i32, reply.root_y as i32))
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn cursor_point() -> Option<(i32, i32)> {
+    None
+}
+
 fn with_winit<T>(window: &slint::Window, f: impl FnOnce(&winit::window::Window) -> T) -> Option<T> {
     use i_slint_backend_winit::WinitWindowAccessor;
     window.with_winit_window(f)
 }
 
 fn place_main(window: &slint::Window) {
-    place_window(window, 0, 1100, 740, false);
+    place_window(window, 0, 1100, 740, false, false);
 }
 
 fn select_backend() -> Result<(), String> {

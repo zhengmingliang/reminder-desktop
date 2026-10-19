@@ -5,6 +5,7 @@ import { Theme } from "theme.slint";
 import {
     IcBellPri, IcBellOnPri, IcCheckOnPri, IcClockPri, IcClockMuted, IcClockWarn,
     IcPlusPri, IcPlusInk, IcMinusInk, IcDownloadText2, IcTrayDownText2, IcPowerText2,
+    IcGearText2,
     IcSearchPh, IcRepeatPri, IcCheckCircleOk, IcPauseCirclePh, IcChevronLeftText2,
     IcChevronDownText3, IcChevronRightText3, IcCalendarText3, IcCheckOk, IcTrashDanger,
     IcExternalLinkText2, IcMenuWindow, IcMenuWindowPri, IcMenuPlus, IcMenuClock,
@@ -29,6 +30,7 @@ export component NamedIcon inherits Rectangle {
     if root.icon-name == "download-text2" : IcDownloadText2 { s: root.s; }
     if root.icon-name == "tray-down-text2" : IcTrayDownText2 { s: root.s; }
     if root.icon-name == "power-text2" : IcPowerText2 { s: root.s; }
+    if root.icon-name == "gear-text2" : IcGearText2 { s: root.s; }
     if root.icon-name == "search-ph" : IcSearchPh { s: root.s; }
     if root.icon-name == "repeat-pri" : IcRepeatPri { s: root.s; }
     if root.icon-name == "check-circle-ok" : IcCheckCircleOk { s: root.s; }

@@ -57,6 +57,11 @@ export component IcPowerText2 inherits IconBase {
     source: Theme.dark ? @image-url("../assets/icons/power-text2-dark.png") : @image-url("../assets/icons/power-text2.png");
 }
 
+// 顶栏设置按钮：与其它 text2 图标同色（浅 #46535F / 深 #B6C0CA），由 gear-menu 重着色而来。
+export component IcGearText2 inherits IconBase {
+    source: Theme.dark ? @image-url("../assets/icons/gear-text2-dark.png") : @image-url("../assets/icons/gear-text2.png");
+}
+
 export component IcSearchPh inherits IconBase {
     source: Theme.dark ? @image-url("../assets/icons/search-ph-dark.png") : @image-url("../assets/icons/search-ph.png");
 }

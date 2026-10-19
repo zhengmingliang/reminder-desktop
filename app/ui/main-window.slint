@@ -551,6 +551,7 @@ export component MainWindow inherits Window {
     callback dialog-confirm();
     callback dialog-cancel();
     callback hide-to-tray();
+    callback open-settings();
     callback minimize-window();
     callback maximize-window();
     callback quit();
@@ -764,10 +765,23 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        // 三个 32px 图标按钮：整高容器里垂直居中，间距 4。
+                        // 四个 32px 图标按钮：设置、备份、隐藏到托盘、退出；整高容器里垂直居中，间距 4。
                         HorizontalLayout {
                             height: 100%;
                             spacing: 4px;
+                            Rectangle {
+                                width: 32px;
+                                height: 100%;
+                                horizontal-stretch: 0;
+                                ToolBtn {
+                                    icon-name: "gear-text2";
+                                    tip-x-offset: 0px;
+                                    tip-title: "设置";
+                                    tip-body: "主题切换、开机自启动与从备份恢复。";
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.open-settings(); }
+                                }
+                            }
                             Rectangle {
                                 width: 32px;
                                 height: 100%;
