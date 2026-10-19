@@ -35,6 +35,19 @@ jobs:
       - name: Package
         id: pkg
         shell: bash
+        env:
+          # macOS 签名与公证。未配置的 secret 会展开成空串，脚本据此自动跳过签名。
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_BUNDLE_ID: ${{ secrets.MACOS_BUNDLE_ID }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_NOTARY_API_KEY: ${{ secrets.MACOS_NOTARY_API_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
+          # Windows 代码签名。
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: ./packaging/package.sh
 
       - uses: actions/upload-artifact@v4
@@ -64,4 +77,4 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" artifacts/* \
             --title "${GITHUB_REF_NAME}" \
-            --notes "桌面提醒 ${GITHUB_REF_NAME}。每个压缩包里是一个未签名的原生程序，解压后直接运行。Linux 需要系统已安装 libfontconfig 和 libasound。"
+            --notes "桌面提醒 ${GITHUB_REF_NAME}。Linux 解压后直接运行（需要系统已安装 libfontconfig 和 libasound）；macOS 与 Windows 的包在配置了签名密钥时已签名（macOS 另经公证）。"

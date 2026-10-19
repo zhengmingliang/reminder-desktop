@@ -48,6 +48,19 @@ Linux Mint Cinnamon 的面板是传统系统托盘，不提供 `org.kde.StatusNo
 
 Windows 发布构建不弹控制台。macOS 的菜单栏图标由 Slint 的状态项实现。
 
+## 签名与公证（可选）
+
+`packaging/package.sh` 默认出未签名的包；只有提供了凭据才会签名，凭据缺失就自动跳过。CI（`.github/workflows/package.yml`）通过仓库 Secrets 注入，未配置的 secret 会展开成空串，等同跳过。
+
+macOS：配置 `MACOS_SIGN_IDENTITY`（Developer ID 证书名）即用 `codesign` 签名，并改打成 `reminder-desktop.app`；再配置公证凭据则接着 `notarytool submit --wait` 并 `stapler` 装订票据。公证凭据二选一：
+
+- Apple ID：`MACOS_NOTARY_APPLE_ID`、`MACOS_NOTARY_TEAM_ID`、`MACOS_NOTARY_PASSWORD`（app 专用密码）
+- API Key：`MACOS_NOTARY_API_KEY`（.p8 路径）、`MACOS_NOTARY_KEY_ID`、`MACOS_NOTARY_ISSUER`
+
+可选用 `MACOS_BUNDLE_ID` 覆盖 bundle id（默认 `com.alianga.reminder-desktop`）。
+
+Windows：配置 `WINDOWS_CERT_PFX_BASE64`（.pfx 的 Base64）与 `WINDOWS_CERT_PASSWORD` 即用 `signtool` 签名并校验。
+
 ## 数据目录
 
 | 系统 | 位置 |
