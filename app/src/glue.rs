@@ -44,12 +44,16 @@ enum BrowserMode {
 }
 
 /// 托盘图标最终落在哪条实现上。设置面板要照这个向用户解释现状。
+/// 各变体按平台选择性构造（XEmbed / StatusNotifier 只在 Linux 出现，Native 反之）。
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum TrayKind {
     /// 嵌进了 X11 面板的系统托盘（XEmbed）。
     XEmbed,
     /// 注册成了 StatusNotifierItem，由桌面环境的托盘宿主显示。
     StatusNotifier,
+    /// 系统原生通知区图标：Windows 的 Shell_NotifyIconW，macOS 的菜单栏状态项。
+    Native,
     /// 两条路都没走通：会话里既没有 XEmbed 托盘，也没有 StatusNotifier 宿主。
     None,
 }
@@ -231,7 +235,10 @@ pub fn run(smoke: bool, after_update: bool) -> Result<(), String> {
         }
     } else {
         // 纯 Wayland 没有 X 服务器，XEmbed 协议无从谈起，连探测都不必做。
-        log.log("INFO", "纯 Wayland 会话，跳过 XEmbed 托盘，改走 StatusNotifier");
+        // Windows / macOS 同样不试 XEmbed：托盘由系统原生接口注册（见 try_sni_tray）。
+        if session_kind == SessionKind::Wayland {
+            log.log("INFO", "纯 Wayland 会话，跳过 XEmbed 托盘，改走 StatusNotifier");
+        }
         drop(tray_tx);
         (None, false)
     };
@@ -3205,8 +3212,9 @@ impl Session {
         self.try_sni_tray();
     }
 
-    /// 试一次 StatusNotifier。ksni 的注册是延后的，要等事件循环转起来才发生，
-    /// 所以建完先放着，稍后再回查会话总线确认图标有没有真的挂上去。
+    /// 试注册一次系统托盘。Linux 走 StatusNotifier（ksni），注册是延后的，建完要
+    /// 回查会话总线才知道成没成；Windows / macOS 是同步的原生注册，创建成功即图标
+    /// 已挂上。创建直接失败时计入重试次数，交给 poll_tray 按节奏再试。
     fn try_sni_tray(self: &Rc<Self>) {
         if self.tray_kind.get() != TrayKind::None || self.tray.borrow().is_some() {
             return;
@@ -3216,19 +3224,43 @@ impl Session {
                 let _ = tray.show();
                 bind_tray(&tray, self);
                 *self.tray.borrow_mut() = Some(tray);
-                let session = self.clone();
-                slint::Timer::single_shot(Duration::from_millis(800), move || {
-                    session.confirm_sni_tray();
-                });
+                self.confirm_tray_registration();
             }
-            Err(error) => self
-                .log
-                .log("WARN", &format!("StatusNotifier 托盘创建失败：{error}")),
+            Err(error) => {
+                self.tray_retries.set(self.tray_retries.get() + 1);
+                self.log
+                    .log("WARN", &format!("系统托盘创建失败：{error}"));
+                self.refresh_tray_status();
+            }
         }
+    }
+
+    /// Linux：ksni 的注册是延后的，要等事件循环转起来才发生，所以建完先放着，
+    /// 稍后再回查会话总线确认图标有没有真的挂上去。
+    #[cfg(target_os = "linux")]
+    fn confirm_tray_registration(self: &Rc<Self>) {
+        let session = self.clone();
+        slint::Timer::single_shot(Duration::from_millis(800), move || {
+            session.confirm_sni_tray();
+        });
+    }
+
+    /// Windows / macOS：原生后端创建时同步完成注册（Windows 的 NIM_ADD 失败会
+    /// 直接让 AppTray::new() 返回 Err），能走到这里就说明图标已经挂上了。
+    /// 绝不能套用 Linux 那套 D-Bus 回查——那两个系统没有会话总线，回查永远
+    /// 失败，会把刚注册的图标又删掉。
+    #[cfg(not(target_os = "linux"))]
+    fn confirm_tray_registration(self: &Rc<Self>) {
+        self.tray_kind.set(TrayKind::Native);
+        self.log.log("INFO", "已注册系统托盘图标");
+        self.update_tip();
+        self.refresh_tray_status();
     }
 
     /// 回查总线：本进程的 StatusNotifierItem 名字还活着，说明宿主收下了图标；
     /// 名字没了说明这一轮注册失败（多半是会话里没有托盘宿主），丢掉实例等下一轮。
+    /// 仅 Linux：Windows / macOS 没有会话总线，这套判断不成立（见 confirm_tray_registration）。
+    #[cfg(target_os = "linux")]
     fn confirm_sni_tray(self: &Rc<Self>) {
         if self.tray_kind.get() != TrayKind::None {
             return;
@@ -3258,6 +3290,7 @@ impl Session {
         let text = match self.tray_kind.get() {
             TrayKind::XEmbed => format!("当前会话：{kind} · 托盘图标已嵌入系统托盘"),
             TrayKind::StatusNotifier => format!("当前会话：{kind} · 已注册 StatusNotifier 托盘图标"),
+            TrayKind::Native => format!("当前会话：{kind} · 已注册系统托盘图标"),
             TrayKind::None => {
                 // 没有托盘时窗口藏起来就没人能叫回来了，好在单实例唤回仍然有效。
                 let tail = "关闭窗口后再次运行本程序即可唤回主窗口";
@@ -3365,7 +3398,15 @@ impl Session {
         }
     }
 
+    /// 最小化按钮：有托盘图标时最小化到托盘——窗口隐藏、图标保留，左键或菜单
+    /// 「打开主窗口」都能唤回。托盘不可用（没注册上）时退回任务栏最小化，
+    /// 保证窗口始终有地方叫回来，不会藏进一个没人能唤回的状态。
     fn minimize_main(&self) {
+        if self.tray_kind.get() != TrayKind::None {
+            self.log.log("INFO", "主窗口最小化到托盘");
+            self.hide_main();
+            return;
+        }
         if let Some(ui) = self.ui.upgrade() {
             let _ = with_winit(ui.window(), |winit_window| {
                 winit_window.set_minimized(true);

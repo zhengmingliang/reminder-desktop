@@ -1,10 +1,13 @@
 //! 桌面会话类型探测。
 //!
-//! 托盘只有两条路可走：XEmbed（要一个真的 X 服务器，由面板持有
+//! Linux 下托盘只有两条路可走：XEmbed（要一个真的 X 服务器，由面板持有
 //! `_NET_SYSTEM_TRAY_S0` 选择权）和 StatusNotifierItem（要会话总线上有
 //! `org.kde.StatusNotifierWatcher` 宿主）。纯 Wayland 会话里第一条根本不可能成立，
 //! 所以先分清会话类型，再决定要不要白跑一趟 XEmbed 的探测，以及托盘没出来时
 //! 该怎么向用户解释。
+//!
+//! Windows 和 macOS 没有这套问题：托盘由系统原生接口注册（Windows 是
+//! `Shell_NotifyIconW`，macOS 是菜单栏状态项），这里的探测只为设置面板的文案。
 
 /// 当前图形会话的类型。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -15,6 +18,12 @@ pub enum SessionKind {
     Wayland,
     /// 两个变量都没有：多半是无图形界面的终端 / SSH 会话。
     Unknown,
+    /// Windows：托盘走 Shell_NotifyIconW 原生通知区。
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    Windows,
+    /// macOS：托盘是菜单栏右侧的状态项。
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    MacOS,
 }
 
 impl SessionKind {
@@ -24,20 +33,34 @@ impl SessionKind {
             SessionKind::X11 => "X11",
             SessionKind::Wayland => "Wayland",
             SessionKind::Unknown => "未知",
+            SessionKind::Windows => "Windows",
+            SessionKind::MacOS => "macOS",
         }
     }
 
-    /// XEmbed 需要 X 服务器；纯 Wayland 上一律不可能，连探测都不必做。
+    /// XEmbed 需要 X 服务器；纯 Wayland、Windows、macOS 上一律不可能，连探测都不必做。
     pub fn xembed_possible(self) -> bool {
-        !matches!(self, SessionKind::Wayland)
+        matches!(self, SessionKind::X11 | SessionKind::Unknown)
     }
 }
 
 /// 环境变量为空等同于没设置：`DISPLAY=` 这种空值在登录脚本里并不少见。
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn env_set(name: &str) -> bool {
     std::env::var_os(name).map(|value| !value.is_empty()).unwrap_or(false)
 }
 
+#[cfg(target_os = "windows")]
+pub fn kind() -> SessionKind {
+    SessionKind::Windows
+}
+
+#[cfg(target_os = "macos")]
+pub fn kind() -> SessionKind {
+    SessionKind::MacOS
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn kind() -> SessionKind {
     let xdg = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
     classify(&xdg, env_set("WAYLAND_DISPLAY"), env_set("DISPLAY"))
@@ -45,6 +68,7 @@ pub fn kind() -> SessionKind {
 
 /// 把探测规则单独抽出来，方便不碰环境变量就能测：`XDG_SESSION_TYPE` 优先，
 /// 没有或是不认识的值时才看 `WAYLAND_DISPLAY` / `DISPLAY` 的组合。
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn classify(xdg: &str, wayland: bool, x11: bool) -> SessionKind {
     match xdg.trim().to_ascii_lowercase().as_str() {
         "wayland" => return SessionKind::Wayland,
@@ -60,7 +84,7 @@ fn classify(xdg: &str, wayland: bool, x11: bool) -> SessionKind {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(target_os = "windows", target_os = "macos"))))]
 mod tests {
     use super::{classify, SessionKind};
 

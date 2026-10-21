@@ -9,6 +9,8 @@ mod logutil;
 mod notify;
 mod runtime;
 mod session;
+// 只有 Linux 的 StatusNotifier 路径需要回查会话总线。
+#[cfg(target_os = "linux")]
 mod sni;
 mod system_theme;
 mod update;
